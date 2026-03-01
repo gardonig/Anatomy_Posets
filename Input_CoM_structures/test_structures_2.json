@@ -1,0 +1,14 @@
+{
+  "structures": [
+    {"name": "Skull", "com_vertical": 95},
+    {"name": "Mandible", "com_vertical": 88},
+    {"name": "Cervical spine", "com_vertical": 78},
+    {"name": "Thoracic spine", "com_vertical": 62},
+    {"name": "Sternum", "com_vertical": 58},
+    {"name": "Ribs", "com_vertical": 55},
+    {"name": "Lumbar spine", "com_vertical": 42},
+    {"name": "Sacrum", "com_vertical": 28},
+    {"name": "Femur", "com_vertical": 18},
+    {"name": "Tibia", "com_vertical": 8}
+  ]
+}

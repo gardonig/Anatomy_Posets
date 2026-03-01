@@ -1,0 +1,42 @@
+{
+  "structures": [
+    {
+      "name": "Skull",
+      "com_vertical": 90.0
+    },
+    {
+      "name": "Spine",
+      "com_vertical": 70.0
+    },
+    {
+      "name": "Ribs",
+      "com_vertical": 55.0
+    },
+    {
+      "name": "Pelvis",
+      "com_vertical": 40.0
+    },
+    {
+      "name": "Femur",
+      "com_vertical": 25.0
+    }
+  ],
+  "edges": [
+    [
+      0,
+      4
+    ],
+    [
+      1,
+      3
+    ],
+    [
+      2,
+      3
+    ],
+    [
+      3,
+      4
+    ]
+  ]
+}

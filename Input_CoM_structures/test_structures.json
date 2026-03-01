@@ -1,0 +1,9 @@
+{
+  "structures": [
+    {"name": "Skull", "com_vertical": 90},
+    {"name": "Spine", "com_vertical": 70},
+    {"name": "Ribs", "com_vertical": 55},
+    {"name": "Pelvis", "com_vertical": 40},
+    {"name": "Femur", "com_vertical": 25}
+  ]
+}

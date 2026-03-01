@@ -1,0 +1,13 @@
+{
+  "structures": [
+    {
+      "name": "poop",
+      "com_z": 89.0
+    },
+    {
+      "name": "pee",
+      "com_z": 88.0
+    }
+  ],
+  "edges": []
+}
