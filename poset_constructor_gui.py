@@ -65,9 +65,13 @@ def _ensure_qt_platform_plugin_path() -> None:
 class Structure:
     """A node in the poset: an anatomical structure (organ, bone, muscle, etc.)."""
     name: str
-    com_vertical: float   # Center of Mass along vertical (superior–inferior, top–bottom) axis
-    com_lateral: float  # Center of Mass along mediolateral (left–right) axis; left = smaller, right = larger; patient's perspective
-    com_anteroposterior: float  # Center of Mass along anteroposterior (front–back) axis; anterior = smaller, posterior = larger
+    # Convention A (all in standard anatomical position, scaled to [0, 100]):
+    # - com_vertical: 0 = toes/feet (inferior), 100 = head/vertex (superior)
+    # - com_lateral: 0 = right side, 100 = left side (patient's view)
+    # - com_anteroposterior: 0 = back (dorsal), 100 = front (ventral)
+    com_vertical: float
+    com_lateral: float
+    com_anteroposterior: float
 
 
 def load_structures_from_json(path: str) -> List[Structure]:
@@ -79,9 +83,9 @@ def load_structures_from_json(path: str) -> List[Structure]:
       "structures": [
         {
           "name": "Skull",
-          "com_vertical": 90.0,          # top–bottom (superior–inferior)
-          "com_lateral": 0.0,            # left–right (mediolateral), patient's perspective
-          "com_anteroposterior": 0.0     # front–back (anteroposterior), anterior < posterior
+          "com_vertical": 90.0,          # vertical SI axis; 0 = toes, 100 = head
+          "com_lateral": 0.0,            # lateral RL axis; 0 = right, 100 = left (patient's view)
+          "com_anteroposterior": 0.0     # AP axis; 0 = back, 100 = front
         },
         ...
       ]
@@ -133,7 +137,7 @@ def save_poset_to_json(
         ...
       ],
       "edges_vertical": [[u, v], ...],          # top–bottom (superior–inferior)
-      "edges_mediolateral": [[u, v], ...],      # left–right (mediolateral, patient's view)
+      "edges_mediolateral": [[u, v], ...],      # right–left (lateral, patient's view)
       "edges_anteroposterior": [[u, v], ...],   # front–back (anteroposterior)
       "adjacency_vertical": [[0/1, ...], ...],          # optional
       "adjacency_mediolateral": [[0/1, ...], ...],      # optional
@@ -259,8 +263,8 @@ class PosetViewerWindow(QWidget):
         for idx, s in enumerate(structures):
             if axis_label == "Vertical":
                 list_widget.addItem(f"  {idx}: {s.name} (CoM vertical = {s.com_vertical})")
-            elif axis_label == "Mediolateral":
-                list_widget.addItem(f"  {idx}: {s.name} (CoM mediolateral = {s.com_lateral})")
+            elif axis_label == "Lateral":
+                list_widget.addItem(f"  {idx}: {s.name} (CoM lateral = {s.com_lateral})")
             else:  # Anteroposterior
                 list_widget.addItem(
                     f"  {idx}: {s.name} (CoM anteroposterior = {s.com_anteroposterior})"
@@ -276,7 +280,7 @@ class PosetViewerWindow(QWidget):
 
         if axis_label == "Vertical":
             axis = AXIS_VERTICAL
-        elif axis_label == "Mediolateral":
+        elif axis_label == "Lateral":
             axis = AXIS_MEDIOLATERAL
         else:
             axis = AXIS_ANTERIOR_POSTERIOR
@@ -322,7 +326,7 @@ class PosetViewerWindow(QWidget):
         )
         self._tabs.addTab(vert_widget, "Vertical (top–bottom)")
 
-        # Tab: Mediolateral (left–right)
+        # Tab: Lateral (right–left)
         ml_widget = QWidget()
         ml_layout = QHBoxLayout(ml_widget)
         ml_list_group = QGroupBox("Poset Data")
@@ -341,10 +345,10 @@ class PosetViewerWindow(QWidget):
             ml_hasse,
             self._structures,
             self._edges_mediolateral,
-            "Mediolateral",
+            "Lateral",
             "to the left of",
         )
-        self._tabs.addTab(ml_widget, "Mediolateral (left–right, patient's view)")
+        self._tabs.addTab(ml_widget, "Lateral (right–left, patient's view)")
 
         # Tab: Anteroposterior (front–back)
         ap_widget = QWidget()
@@ -528,7 +532,7 @@ class HasseDiagramView(QGraphicsView):
         self.fitInView(self._scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
 AXIS_VERTICAL = "vertical"  # top–bottom (superior–inferior)
-AXIS_MEDIOLATERAL = "mediolateral"  # left–right (patient's view)
+AXIS_MEDIOLATERAL = "mediolateral"  # right–left (lateral, patient's view)
 AXIS_ANTERIOR_POSTERIOR = "anteroposterior"  # front–back (anteroposterior)
 
 
@@ -552,6 +556,32 @@ class PosetBuilder:
 
         # Graph represented as adjacency list using indices into self.structures
         self.edges: Set[Tuple[int, int]] = set()
+
+        # Symmetry info for vertical axis: detect left/right pairs with same core name
+        self._core_names: List[str] = []
+        self._symmetric_partner: Dict[int, int] = {}
+        if self.axis == AXIS_VERTICAL:
+            side_and_core: List[Tuple[Optional[str], str]] = []
+            for s in self.structures:
+                name = s.name.strip()
+                if name.startswith("Left "):
+                    side_and_core.append(("Left", name[5:].strip()))
+                elif name.startswith("Right "):
+                    side_and_core.append(("Right", name[6:].strip()))
+                else:
+                    side_and_core.append((None, name))
+            core_to_sides: Dict[str, Dict[str, int]] = {}
+            for idx, (side, core) in enumerate(side_and_core):
+                self._core_names.append(core)
+                if side is None:
+                    continue
+                core_to_sides.setdefault(core, {})[side] = idx
+            for core, sides in core_to_sides.items():
+                if "Left" in sides and "Right" in sides:
+                    li = sides["Left"]
+                    ri = sides["Right"]
+                    self._symmetric_partner[li] = ri
+                    self._symmetric_partner[ri] = li
 
         # Iteration state for gap-based strategy
         self.current_gap = 1
@@ -614,6 +644,27 @@ class PosetBuilder:
                 j = i + self.current_gap
                 self.current_i += 1
 
+                if self.axis == AXIS_VERTICAL:
+                    # For vertical axis, enforce a canonical representative for each
+                    # left/right pair so that we never ask both
+                    #   (Left X, Y) and (Right X, Y),
+                    # nor both
+                    #   (Y, Left X) and (Y, Right X).
+                    pi = self._symmetric_partner.get(i)
+                    pj = self._symmetric_partner.get(j)
+
+                    # If i has a symmetric partner with a smaller index,
+                    # skip this pair and let that partner represent the core.
+                    if pi is not None and pi < i:
+                        continue
+                    # Similarly for j.
+                    if pj is not None and pj < j:
+                        continue
+
+                    # Also skip direct Left/Right comparison for the same core vertically
+                    if pi is not None and pi == j:
+                        continue
+
                 # Skip if relation already implied by transitivity
                 if self.path_exists(i, j):
                     continue
@@ -631,24 +682,82 @@ class PosetBuilder:
 
     def get_iteration_progress(self) -> float:
         """
-        Progress through the fixed (gap, i) iteration, 0.0 to 1.0.
-        One answer can advance this by a lot when many pairs are skipped by transitivity.
+        Progress based on how many unordered pairs {i, j}, i < j, are already
+        determined (comparable) in the current graph, 0.0 to 1.0.
+
+        A pair is considered "done" if the current edges imply either i < j
+        or j < i via transitivity. The remaining pairs are the ones that are
+        still incomparable and could still require a question in the *worst case*
+        according to Algorithm 1.
         """
-        if self.finished or self.n <= 1:
+        if self.n <= 1:
             return 1.0
         total = self.n * (self.n - 1) // 2
         if total == 0:
             return 1.0
-        # Pairs already passed: gaps 1..current_gap-1 fully, plus current_i in current_gap
-        steps_done = (self.current_gap - 1) * self.n - (self.current_gap - 1) * self.current_gap // 2 + self.current_i
-        return min(1.0, steps_done / total)
+
+        # Count incomparable pairs that might still need questions in worst case
+        remaining = 0
+        for i in range(self.n):
+            for j in range(i + 1, self.n):
+                if not self.path_exists(i, j) and not self.path_exists(j, i):
+                    remaining += 1
+
+        known = total - remaining
+        return min(1.0, known / total)
+
+    def estimate_remaining_questions(self) -> int:
+        """
+        Estimate, in the *worst case*, how many questions Algorithm 1 would still
+        ask starting from the current (gap, i) state and current edges.
+
+        We simulate the remaining (gap, i) loop without adding new edges, and
+        count how many pairs are not yet implied by transitivity.
+        """
+        if self.finished or self.n <= 1:
+            return 0
+
+        remaining = 0
+        g = self.current_gap
+        i = self.current_i
+
+        while g <= self.n - 1:
+            while i <= self.n - 1 - g:
+                s = i
+                t = i + g
+                i += 1
+
+                if self.path_exists(s, t):
+                    continue
+
+                remaining += 1
+
+            g += 1
+            i = 0
+
+        return remaining
 
     def record_response(self, i: int, j: int, is_above: bool) -> None:
         """
         Called by the GUI after the clinician/user answers Q(si, sj).
         """
         if is_above:
+            # Always add the directly answered relation
             self.edges.add((i, j))
+
+            # For vertical axis, also apply symmetry to left/right counterparts:
+            # if "Left X" is above Y, then "Right X" is also above Y, and similarly
+            # for a symmetric counterpart of Y.
+            if self.axis == AXIS_VERTICAL:
+                # Mirror on source
+                mi = self._symmetric_partner.get(i)
+                if mi is not None:
+                    self.edges.add((mi, j))
+
+                # Mirror on target
+                mj = self._symmetric_partner.get(j)
+                if mj is not None:
+                    self.edges.add((i, mj))
 
     def get_final_relations(self) -> Tuple[List[Structure], Set[Tuple[int, int]]]:
         """
@@ -689,7 +798,7 @@ class DefinitionDialog(QDialog):
             "strictly to the left of the other (mediolateral axis). Your answers help us build a spatial ordering "
             "that can be used to check and correct automatic segmentations. There are no wrong answers—we need "
             "your clinical judgement.\n\n"
-            "We assume the patient is in standard anatomical position, as shown in the figure. "
+            "We assume the patient is in standard anatomical position, as shown in the figure.\n\n"
             "If you have any questions, please do not hesitate to reach out to Gian or Güney."
         )
         intro_label = QLabel(intro_text)
@@ -698,13 +807,18 @@ class DefinitionDialog(QDialog):
 
         anatomy_img = QLabel()
         anatomy_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        anatomy_img.setFixedHeight(220)
-        anatomy_path = Path(__file__).resolve().parent / "assets" / "definition_images" / "anatomical_postion.png"
+        anatomy_img.setFixedHeight(400)
+        anatomy_path = (
+            Path(__file__).resolve().parent
+            / "assets"
+            / "definition_images"
+            / "anatomy_position_and_axes.png"
+        )
         if anatomy_path.exists():
             anatomy_pix = QPixmap(str(anatomy_path))
             if not anatomy_pix.isNull():
                 anatomy_img.setPixmap(
-                    anatomy_pix.scaledToHeight(220, Qt.SmoothTransformation)
+                    anatomy_pix.scaledToHeight(400, Qt.SmoothTransformation)
                 )
         if anatomy_img.pixmap() is None or anatomy_img.pixmap().isNull():
             anatomy_img.setText("[Anatomical position diagram missing]")
@@ -721,8 +835,14 @@ class DefinitionDialog(QDialog):
 
         layout.addStretch(1)
 
-        # Proceed button, right-bottom
-        proceed_btn = QPushButton("Understood")
+        # Proceed button in its own bottom-right box
+        button_box = QFrame()
+        button_box.setStyleSheet(
+            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 8px; padding-top: 8px; }"
+        )
+        button_layout = QHBoxLayout(button_box)
+        button_layout.addStretch(1)
+        proceed_btn = QPushButton("Proceed")
         proceed_btn.setStyleSheet(
             """
             QPushButton {
@@ -734,10 +854,8 @@ class DefinitionDialog(QDialog):
             """
         )
         proceed_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        btn_row.addWidget(proceed_btn)
-        layout.addLayout(btn_row)
+        button_layout.addWidget(proceed_btn)
+        layout.addWidget(button_box)
 
 
 class VerticalDefinitionDialog(QDialog):
@@ -753,14 +871,16 @@ class VerticalDefinitionDialog(QDialog):
         self.setModal(True)
         self.setStyleSheet("background-color: #ffffff;")
 
-        root = QHBoxLayout(self)
+        main = QVBoxLayout(self)
+        content = QHBoxLayout()
+        main.addLayout(content)
 
         _text_style = "color: #1a1a1a; font-size: 14px; padding: 4px 0;"
         _heading_style = "color: #1a1a1a; font-weight: bold; font-size: 16px; padding: 4px 0 4px 0;"
 
         # Left column: text (task, definition, question form)
         left_col = QVBoxLayout()
-        root.addLayout(left_col, stretch=3)
+        content.addLayout(left_col, stretch=3)
 
         heading = QLabel("Vertical relation: \"strictly above\"")
         heading.setStyleSheet(_heading_style)
@@ -796,26 +916,9 @@ class VerticalDefinitionDialog(QDialog):
 
         left_col.addStretch(1)
 
-        proceed_btn = QPushButton("Understood")
-        proceed_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #007aff; color: white; border: none; border-radius: 8px;
-                padding: 10px 22px; font-size: 15px;
-            }
-            QPushButton:hover { background-color: #5ac8fa; }
-            QPushButton:pressed { background-color: #0051d5; }
-            """
-        )
-        proceed_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        btn_row.addWidget(proceed_btn)
-        left_col.addLayout(btn_row)
-
-        # Right column: large example images (No example first, then Yes)
+        # Right column: textual examples + images side by side (No and Yes)
         right_col = QVBoxLayout()
-        root.addLayout(right_col, stretch=4)
+        content.addLayout(right_col, stretch=4)
 
         _script_dir = Path(__file__).resolve().parent
         _img_dir = _script_dir / "assets" / "definition_images"
@@ -830,11 +933,16 @@ class VerticalDefinitionDialog(QDialog):
             "color: #444; font-size: 13px; background: #ffffff;"
         )
 
-        # No example first: text above image (Femur–Tibia)
-        no_text = QLabel("Example 1 (No): \"Is the Femur strictly above the Tibia?\" → Answer: No.")
+        examples_row = QHBoxLayout()
+        right_col.addLayout(examples_row)
+
+        # No example column (Femur–Tibia)
+        no_col = QVBoxLayout()
+        examples_row.addLayout(no_col, stretch=1)
+        no_text = QLabel("Example 1: \"Is the Femur strictly above the Tibia?\" → Answer: No.")
         no_text.setWordWrap(True)
         no_text.setStyleSheet(_text_style)
-        right_col.addWidget(no_text)
+        no_col.addWidget(no_text)
 
         no_label = QLabel()
         no_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -850,14 +958,16 @@ class VerticalDefinitionDialog(QDialog):
         if no_label.pixmap() is None or no_label.pixmap().isNull():
             no_label.setText("[Add vertical No example image here]")
             no_label.setStyleSheet(placeholder_style)
-        right_col.addWidget(no_label)
+        no_col.addWidget(no_label)
 
-        # Yes example second: text above image (Femur–Fibula)
-        yes_text = QLabel("Example 2 (Yes): \"Is the Femur strictly above the Fibula?\" → Answer: Yes.")
+        # Yes example column (Femur–Fibula)
+        yes_col = QVBoxLayout()
+        examples_row.addLayout(yes_col, stretch=1)
+        yes_text = QLabel("Example 2: \"Is the Femur strictly above the Fibula?\" → Answer: Yes.")
         yes_text.setWordWrap(True)
         yes_text.setStyleSheet(_text_style)
-        yes_text.setContentsMargins(0, 12, 0, 0)
-        right_col.addWidget(yes_text)
+        yes_text.setContentsMargins(12, 0, 0, 0)
+        yes_col.addWidget(yes_text)
 
         yes_label = QLabel()
         yes_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -873,43 +983,67 @@ class VerticalDefinitionDialog(QDialog):
         if yes_label.pixmap() is None or yes_label.pixmap().isNull():
             yes_label.setText("[Add vertical Yes example image here]")
             yes_label.setStyleSheet(placeholder_style)
-        right_col.addWidget(yes_label)
+        yes_col.addWidget(yes_label)
 
         source = QLabel("Images in this window are captured from Complete Anatomy.")
         source.setWordWrap(True)
         source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
         right_col.addWidget(source)
 
+        # Proceed button below all content (bottom-right), like the instructions window
+        button_box = QFrame()
+        button_box.setStyleSheet(
+            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 8px; padding-top: 8px; }"
+        )
+        btn_row = QHBoxLayout(button_box)
+        btn_row.addStretch(1)
+        proceed_btn = QPushButton("Proceed")
+        proceed_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #007aff; color: white; border: none; border-radius: 8px;
+                padding: 10px 22px; font-size: 15px;
+            }
+            QPushButton:hover { background-color: #5ac8fa; }
+            QPushButton:pressed { background-color: #0051d5; }
+            """
+        )
+        proceed_btn.clicked.connect(self.accept)
+        btn_row.addWidget(proceed_btn)
+        main.addWidget(button_box)
+
 
 class MediolateralDefinitionDialog(QDialog):
     """
-    Dedicated window for the mediolateral (left–right) 'strictly to the left of' definition and examples.
-    Shown only when the mediolateral axis is selected; user presses 'Proceed' to start questions.
+    Dedicated window for the lateral (right–left) 'strictly to the left of' definition and examples.
+    Shown only when the lateral axis is selected; user presses 'Proceed' to start questions.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Definition — Mediolateral \"strictly to the left of\"")
+        self.setWindowTitle("Definition — Lateral \"strictly to the left of\"")
         self.resize(820, 520)
         self.setModal(True)
         self.setStyleSheet("background-color: #ffffff;")
 
-        root = QHBoxLayout(self)
+        main = QVBoxLayout(self)
+        content = QHBoxLayout()
+        main.addLayout(content)
 
         _text_style = "color: #1a1a1a; font-size: 14px; padding: 4px 0;"
         _heading_style = "color: #1a1a1a; font-weight: bold; font-size: 16px; padding: 4px 0 4px 0;"
 
         # Left column: text (task, definition, question form)
         left_col = QVBoxLayout()
-        root.addLayout(left_col, stretch=3)
+        content.addLayout(left_col, stretch=3)
 
-        heading = QLabel("Mediolateral relation: \"strictly to the left of\"")
+        heading = QLabel("Lateral relation: \"strictly to the left of\"")
         heading.setStyleSheet(_heading_style)
         left_col.addWidget(heading)
 
         text1 = QLabel(
             "You will be asked whether one anatomical structure is strictly to the left of another "
-            "along the left–right (mediolateral) axis, from the patient's perspective."
+            "along the right–left (lateral) axis, from the patient's perspective."
         )
         text1.setWordWrap(True)
         text1.setStyleSheet(_text_style)
@@ -945,6 +1079,89 @@ class MediolateralDefinitionDialog(QDialog):
 
         left_col.addStretch(1)
 
+        # Right column: two examples side-by-side (text above image)
+        right_col = QVBoxLayout()
+        content.addLayout(right_col, stretch=4)
+
+        _script_dir = Path(__file__).resolve().parent
+        _img_dir = _script_dir / "assets" / "definition_images"
+        img_height = 280
+
+        img_style = (
+            "border: 1px solid #cccccc; border-radius: 8px; margin-top: 6px; "
+            "background: #ffffff;"
+        )
+        placeholder_style = (
+            "border: 1px dashed #bbbbbb; border-radius: 8px; margin-top: 6px; "
+            "color: #444; font-size: 13px; background: #ffffff;"
+        )
+
+        examples_row = QHBoxLayout()
+        right_col.addLayout(examples_row)
+
+        # Example (Yes)
+        yes_col = QVBoxLayout()
+        examples_row.addLayout(yes_col, stretch=1)
+        ex1_text = QLabel(
+            "Example 1: \"Is the Left femur strictly to the left of the Right femur?\" "
+            "→ Answer: Yes (from the patient's perspective)."
+        )
+        ex1_text.setWordWrap(True)
+        ex1_text.setStyleSheet(_text_style)
+        yes_col.addWidget(ex1_text)
+
+        ex1_img = QLabel()
+        ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ex1_img.setFixedHeight(img_height)
+        ex1_img.setStyleSheet(img_style)
+        ex1_path = _img_dir / "example_lat_yes.png"
+        if ex1_path.exists():
+            pix = QPixmap(str(ex1_path))
+            if not pix.isNull():
+                ex1_img.setPixmap(pix.scaledToHeight(img_height, Qt.SmoothTransformation))
+        if ex1_img.pixmap() is None or ex1_img.pixmap().isNull():
+            ex1_img.setText("[Add mediolateral Yes example image here]")
+            ex1_img.setStyleSheet(placeholder_style)
+        yes_col.addWidget(ex1_img)
+
+        # Example (No)
+        no_col = QVBoxLayout()
+        examples_row.addLayout(no_col, stretch=1)
+        ex2_text = QLabel(
+            "Example 2: \"Is the Left femur strictly to the left of the pelvis?\" "
+            "→ Answer: No (they overlap in the mediolateral direction)."
+        )
+        ex2_text.setWordWrap(True)
+        ex2_text.setStyleSheet(_text_style)
+        ex2_text.setContentsMargins(12, 0, 0, 0)
+        no_col.addWidget(ex2_text)
+
+        ex2_img = QLabel()
+        ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ex2_img.setFixedHeight(img_height)
+        ex2_img.setStyleSheet(img_style)
+        ex2_path = _img_dir / "example_lat_no.png"
+        if ex2_path.exists():
+            pix = QPixmap(str(ex2_path))
+            if not pix.isNull():
+                ex2_img.setPixmap(pix.scaledToHeight(img_height, Qt.SmoothTransformation))
+        if ex2_img.pixmap() is None or ex2_img.pixmap().isNull():
+            ex2_img.setText("[Add mediolateral No example image here]")
+            ex2_img.setStyleSheet(placeholder_style)
+        no_col.addWidget(ex2_img)
+
+        source = QLabel("Images in this window are captured from Complete Anatomy.")
+        source.setWordWrap(True)
+        source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
+        right_col.addWidget(source)
+
+        # Proceed button below all content (bottom-right), like the instructions window
+        button_box = QFrame()
+        button_box.setStyleSheet(
+            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 8px; padding-top: 8px; }"
+        )
+        btn_row = QHBoxLayout(button_box)
+        btn_row.addStretch(1)
         proceed_btn = QPushButton("Proceed")
         proceed_btn.setStyleSheet(
             """
@@ -957,69 +1174,8 @@ class MediolateralDefinitionDialog(QDialog):
             """
         )
         proceed_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
         btn_row.addWidget(proceed_btn)
-        left_col.addLayout(btn_row)
-
-        # Right column: textual examples + placeholder images
-        right_col = QVBoxLayout()
-        root.addLayout(right_col, stretch=4)
-
-        _script_dir = Path(__file__).resolve().parent
-        _img_dir = _script_dir / "assets" / "definition_images"
-        img_height = 260
-
-        img_style = (
-            "border: 1px solid #cccccc; border-radius: 8px; margin-top: 6px; "
-            "background: #ffffff;"
-        )
-        placeholder_style = (
-            "border: 1px dashed #bbbbbb; border-radius: 8px; margin-top: 6px; "
-            "color: #444; font-size: 13px; background: #ffffff;"
-        )
-
-        # Example 1 (Yes): Left vs Right femur
-        ex1_text = QLabel(
-            "Example 1 (Yes): \"Is the Left femur strictly to the left of the Right femur?\" "
-            "→ Answer: Yes (from the patient's perspective)."
-        )
-        ex1_text.setWordWrap(True)
-        ex1_text.setStyleSheet(_text_style)
-        right_col.addWidget(ex1_text)
-
-        ex1_img = QLabel()
-        ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex1_img.setFixedHeight(img_height)
-        ex1_img.setStyleSheet(img_style)
-        # Placeholder only for now
-        ex1_img.setText("[Add mediolateral Yes example image here]")
-        ex1_img.setStyleSheet(placeholder_style)
-        right_col.addWidget(ex1_img)
-
-        # Example 2 (No): Left femur vs pelvis (overlap)
-        ex2_text = QLabel(
-            "Example 2 (No): \"Is the Left femur strictly to the left of the pelvis?\" "
-            "→ Answer: No (they overlap in the mediolateral direction)."
-        )
-        ex2_text.setWordWrap(True)
-        ex2_text.setStyleSheet(_text_style)
-        ex2_text.setContentsMargins(0, 12, 0, 0)
-        right_col.addWidget(ex2_text)
-
-        ex2_img = QLabel()
-        ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex2_img.setFixedHeight(img_height)
-        ex2_img.setStyleSheet(img_style)
-        # Placeholder only for now
-        ex2_img.setText("[Add mediolateral No example image here]")
-        ex2_img.setStyleSheet(placeholder_style)
-        right_col.addWidget(ex2_img)
-
-        source = QLabel("Images in this window are captured from Complete Anatomy (mediolateral examples to be added).")
-        source.setWordWrap(True)
-        source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
-        right_col.addWidget(source)
+        main.addWidget(button_box)
 
 
 class AnteroposteriorDefinitionDialog(QDialog):
@@ -1035,14 +1191,16 @@ class AnteroposteriorDefinitionDialog(QDialog):
         self.setModal(True)
         self.setStyleSheet("background-color: #ffffff;")
 
-        root = QHBoxLayout(self)
+        main = QVBoxLayout(self)
+        content = QHBoxLayout()
+        main.addLayout(content)
 
         _text_style = "color: #1a1a1a; font-size: 14px; padding: 4px 0;"
         _heading_style = "color: #1a1a1a; font-weight: bold; font-size: 16px; padding: 4px 0 4px 0;"
 
         # Left column: text (task, definition, question form)
         left_col = QVBoxLayout()
-        root.addLayout(left_col, stretch=3)
+        content.addLayout(left_col, stretch=3)
 
         heading = QLabel("Anteroposterior relation: \"strictly in front of\"")
         heading.setStyleSheet(_heading_style)
@@ -1078,6 +1236,88 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         left_col.addStretch(1)
 
+        # Right column: two examples side-by-side (text above image)
+        right_col = QVBoxLayout()
+        content.addLayout(right_col, stretch=4)
+
+        img_height = 280
+
+        img_style = (
+            "border: 1px solid #cccccc; border-radius: 8px; margin-top: 6px; "
+            "background: #ffffff;"
+        )
+        placeholder_style = (
+            "border: 1px dashed #bbbbbb; border-radius: 8px; margin-top: 6px; "
+            "color: #444; font-size: 13px; background: #ffffff;"
+        )
+
+        _script_dir = Path(__file__).resolve().parent
+        _img_dir = _script_dir / "assets" / "definition_images"
+
+        examples_row = QHBoxLayout()
+        right_col.addLayout(examples_row)
+
+        # Example (Yes)
+        yes_col = QVBoxLayout()
+        examples_row.addLayout(yes_col, stretch=1)
+        ex1_text = QLabel(
+            "Example 1 (Yes): \"Is the sternum strictly in front of the thoracic spine?\" → Answer: Yes."
+        )
+        ex1_text.setWordWrap(True)
+        ex1_text.setStyleSheet(_text_style)
+        yes_col.addWidget(ex1_text)
+
+        ex1_img = QLabel()
+        ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ex1_img.setFixedHeight(img_height)
+        ex1_img.setStyleSheet(img_style)
+        ex1_path = _img_dir / "example_ap_yes.png"
+        if ex1_path.exists():
+            pix = QPixmap(str(ex1_path))
+            if not pix.isNull():
+                ex1_img.setPixmap(pix.scaledToHeight(img_height, Qt.SmoothTransformation))
+        if ex1_img.pixmap() is None or ex1_img.pixmap().isNull():
+            ex1_img.setText("[Add anteroposterior Yes example image here]")
+            ex1_img.setStyleSheet(placeholder_style)
+        yes_col.addWidget(ex1_img)
+
+        # Example (No)
+        no_col = QVBoxLayout()
+        examples_row.addLayout(no_col, stretch=1)
+        ex2_text = QLabel(
+            "Example 2 (No): \"Is the clavicle strictly in front of the cervical spine?\" → Answer: No."
+        )
+        ex2_text.setWordWrap(True)
+        ex2_text.setStyleSheet(_text_style)
+        ex2_text.setContentsMargins(12, 0, 0, 0)
+        no_col.addWidget(ex2_text)
+
+        ex2_img = QLabel()
+        ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ex2_img.setFixedHeight(img_height)
+        ex2_img.setStyleSheet(img_style)
+        ex2_path = _img_dir / "example_ap_no.png"
+        if ex2_path.exists():
+            pix = QPixmap(str(ex2_path))
+            if not pix.isNull():
+                ex2_img.setPixmap(pix.scaledToHeight(img_height, Qt.SmoothTransformation))
+        if ex2_img.pixmap() is None or ex2_img.pixmap().isNull():
+            ex2_img.setText("[Add anteroposterior No example image here]")
+            ex2_img.setStyleSheet(placeholder_style)
+        no_col.addWidget(ex2_img)
+
+        source = QLabel("Images in this window are captured from Complete Anatomy.")
+        source.setWordWrap(True)
+        source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
+        right_col.addWidget(source)
+
+        # Proceed button below all content (bottom-right), like the instructions window
+        button_box = QFrame()
+        button_box.setStyleSheet(
+            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 8px; padding-top: 8px; }"
+        )
+        btn_row = QHBoxLayout(button_box)
+        btn_row.addStretch(1)
         proceed_btn = QPushButton("Proceed")
         proceed_btn.setStyleSheet(
             """
@@ -1090,53 +1330,8 @@ class AnteroposteriorDefinitionDialog(QDialog):
             """
         )
         proceed_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
         btn_row.addWidget(proceed_btn)
-        left_col.addLayout(btn_row)
-
-        # Right column: textual examples + placeholder images
-        right_col = QVBoxLayout()
-        root.addLayout(right_col, stretch=4)
-
-        img_height = 260
-
-        placeholder_style = (
-            "border: 1px dashed #bbbbbb; border-radius: 8px; margin-top: 6px; "
-            "color: #444; font-size: 13px; background: #ffffff;"
-        )
-
-        ex1_text = QLabel(
-            "Example 1 (Yes): \"Is the sternum strictly in front of the spine?\" → Answer: Yes."
-        )
-        ex1_text.setWordWrap(True)
-        ex1_text.setStyleSheet(_text_style)
-        right_col.addWidget(ex1_text)
-
-        ex1_img = QLabel("[Add anteroposterior Yes example image here]")
-        ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex1_img.setFixedHeight(img_height)
-        ex1_img.setStyleSheet(placeholder_style)
-        right_col.addWidget(ex1_img)
-
-        ex2_text = QLabel(
-            "Example 2 (No): \"Is the spine strictly in front of the sternum?\" → Answer: No."
-        )
-        ex2_text.setWordWrap(True)
-        ex2_text.setStyleSheet(_text_style)
-        ex2_text.setContentsMargins(0, 12, 0, 0)
-        right_col.addWidget(ex2_text)
-
-        ex2_img = QLabel("[Add anteroposterior No example image here]")
-        ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex2_img.setFixedHeight(img_height)
-        ex2_img.setStyleSheet(placeholder_style)
-        right_col.addWidget(ex2_img)
-
-        source = QLabel("Images in this window are captured from Complete Anatomy (anteroposterior examples to be added).")
-        source.setWordWrap(True)
-        source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
-        right_col.addWidget(source)
+        main.addWidget(button_box)
 
 
 def _relation_verb(axis: str) -> str:
@@ -1171,6 +1366,21 @@ class QueryDialog(QDialog):
         self._save_callback = save_callback
         self.pending_pair: Tuple[int, int] | None = None
         self._answer_history: List[Tuple[int, int, bool]] = []
+
+        # For vertical axis, detect bilateral (Left/Right) cores to combine in question text
+        self._bilateral_cores: Set[str] = set()
+        if self._axis == AXIS_VERTICAL:
+            core_counts: Dict[str, int] = {}
+            names = [s.name.strip() for s in self.poset_builder.structures]
+            for name in names:
+                if name.startswith("Left "):
+                    core = name[5:].strip()
+                elif name.startswith("Right "):
+                    core = name[6:].strip()
+                else:
+                    continue
+                core_counts[core] = core_counts.get(core, 0) + 1
+            self._bilateral_cores = {c for c, cnt in core_counts.items() if cnt >= 2}
 
         layout = QVBoxLayout(self)
 
@@ -1305,8 +1515,10 @@ class QueryDialog(QDialog):
         i, j = pair
         si, sj = self.poset_builder.structures[i], self.poset_builder.structures[j]
         verb = _relation_verb(self._axis)
-        self.query_label.setText(f"Is the {si.name} {verb} the {sj.name}?")
-        self.progress_bar.setValue(int(self.poset_builder.get_iteration_progress() * 100))
+        name_i = self._display_name(i, si.name)
+        name_j = self._display_name(j, sj.name)
+        self.query_label.setText(f"Is/Are the {name_i} {verb} the {name_j}?")
+        self._update_progress()
 
     def answer_query(self, is_above: bool) -> None:
         if self.pending_pair is None:
@@ -1330,13 +1542,49 @@ class QueryDialog(QDialog):
         self.pending_pair = (last_i, last_j)
         si, sj = self.poset_builder.structures[last_i], self.poset_builder.structures[last_j]
         verb = _relation_verb(self._axis)
-        self.query_label.setText(f"(Correcting) Is the {si.name} {verb} the {sj.name}?")
+        name_i = self._display_name(last_i, si.name)
+        name_j = self._display_name(last_j, sj.name)
+        self.query_label.setText(f"(Correcting) Is/Are the {name_i} {verb} the {name_j}?")
         self.yes_btn.setEnabled(True)
         self.no_btn.setEnabled(True)
         if not self._answer_history:
             self.back_btn.setEnabled(False)
-        self.progress_bar.setValue(int(self.poset_builder.get_iteration_progress() * 100))
+        self._update_progress()
         self._autosave_poset()
+
+    def _update_progress(self) -> None:
+        """
+        Update progress bar based on questions already asked vs worst‑case
+        remaining questions implied by Algorithm 1.
+        """
+        asked = len(self._answer_history)
+        remaining = self.poset_builder.estimate_remaining_questions()
+        total = asked + remaining
+        if total == 0:
+            value = 0
+        else:
+            value = int(100 * asked / total)
+        self.progress_bar.setValue(value)
+
+    def _display_name(self, idx: int, original: str) -> str:
+        """
+        For the vertical axis, collapse Left/Right of the same bilateral structure
+        into a single core name in the question text (e.g. 'Left ribs'/'Right ribs'
+        both shown as 'ribs'). For other cases, or other axes, return the original.
+        """
+        if self._axis != AXIS_VERTICAL:
+            return original
+
+        name = original.strip()
+        core = None
+        if name.startswith("Left "):
+            core = name[5:].strip()
+        elif name.startswith("Right "):
+            core = name[6:].strip()
+
+        if core and core in self._bilateral_cores:
+            return core
+        return original
 
 class MainWindow(QMainWindow):
     def __init__(self, input_path: Optional[str] = None) -> None:
@@ -1370,7 +1618,7 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels([
             "Name",
             "CoM vertical",
-            "CoM mediolateral",
+            "CoM lateral (right–left)",
             "CoM anteroposterior",
         ])
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -1392,13 +1640,19 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(view_btn)
         left_layout.addLayout(btn_row)
 
-        # Axis choice: run vertical, mediolateral, or anteroposterior poset construction
+        # Axis choice: run vertical, lateral, or anteroposterior poset construction
         axis_group = QGroupBox("Axis for this run:")
         axis_layout = QVBoxLayout(axis_group)
-        self.axis_vertical_rb = QRadioButton("Vertical (top–bottom, superior–inferior) — \"strictly above\"")
+        self.axis_vertical_rb = QRadioButton(
+            "Vertical (top–bottom, superior–inferior) — \"strictly above\""
+        )
         self.axis_vertical_rb.setChecked(True)
-        self.axis_frontal_rb = QRadioButton("Mediolateral (left–right, patient's view) — \"strictly to the left of\"")
-        self.axis_ap_rb = QRadioButton("Anteroposterior (front–back) — \"strictly in front of\"")
+        self.axis_frontal_rb = QRadioButton(
+            "Lateral (right–left, patient's view) — \"strictly to the left of\""
+        )
+        self.axis_ap_rb = QRadioButton(
+            "Anteroposterior (front–back) — \"strictly in front of\""
+        )
         axis_layout.addWidget(self.axis_vertical_rb)
         axis_layout.addWidget(self.axis_frontal_rb)
         axis_layout.addWidget(self.axis_ap_rb)

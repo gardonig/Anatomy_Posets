@@ -45,15 +45,19 @@ Input JSON format (e.g. `Input_CoM_structures/test_structures.json`):
 ```json
 {
   "structures": [
-    {"name": "Skull", "com_vertical": 90.0, "com_lateral": 0.0},
-    {"name": "Spine", "com_vertical": 70.0, "com_lateral": 0.0}
+    {"name": "Skull", "com_vertical": 90.0, "com_lateral": 50.0},
+    {"name": "Spine", "com_vertical": 70.0, "com_lateral": 50.0}
   ]
 }
 ```
 
-- **`com_vertical`**: CoM along the superior–inferior (vertical) axis.
-- **`com_lateral`**: CoM along the left–right (frontal) axis (patient’s perspective: smaller = left, larger = right).  
+- **`com_vertical`**: CoM along the superior–inferior (**vertical**) axis, scaled to \([0, 100]\):  
+  `0` = toes / feet (most inferior), `100` = vertex / head (most superior).
+- **`com_lateral`**: CoM along the right–left (**lateral**) axis (patient’s perspective), scaled to \([0, 100]\):  
+  `0` = far right (e.g. right thumb), `100` = far left (e.g. left thumb).  
   If `com_lateral` is omitted, it is treated as `0.0`.
+- **`com_anteroposterior`** (optional): CoM along the back–front (**anteroposterior**) axis, scaled to \([0, 100]\):  
+  `0` = back / dorsal side, `100` = front / ventral side.
 
 Output posets are saved under `Output_constructed_posets/` (autosave during each query).
 
@@ -65,13 +69,19 @@ Output posets are saved under `Output_constructed_posets/` (autosave during each
 
 | Button | Action |
 |--------|--------|
-| **Load Structures** | Opens a file dialog to load a JSON file of structures (`name`, `com_vertical`, `com_lateral`). Fills the table and sets the autosave path from the loaded file. |
-| **+ Add Structure** | Appends a new empty row to the table. Enter name, vertical CoM, and lateral CoM manually. |
+| **Load Structures** | Opens a file dialog to load a JSON file of structures (`name`, `com_vertical`, `com_lateral`, optional `com_anteroposterior`). Fills the table and sets the autosave path from the loaded file. |
+| **+ Add Structure** | Appends a new empty row to the table. Enter name, vertical CoM, lateral CoM, and (optionally) anteroposterior CoM manually. |
 | **− Remove Selected** | Deletes the currently selected table row(s). |
-| **View Poset** | Opens a file dialog to pick a saved poset JSON file (typically from `Output_constructed_posets/`), then opens the **Poset Viewer** (list of structures + Hasse diagrams for vertical and frontal axes). |
-| **▶ Start Poset Construction** | Validates the table, lets you choose the **axis for this run** (vertical “strictly above” or frontal “strictly to the left of”), shows the **Definition** dialog, and then opens the **Expert Query** window with Yes/No questions. Disabled until the query session is closed. Progress is autosaved after each answer. |
+| **View Poset** | Opens a file dialog to pick a saved poset JSON file (typically from `Output_constructed_posets/`), then opens the **Poset Viewer** (list of structures + Hasse diagrams for vertical, lateral, and anteroposterior axes). |
+| **▶ Start Poset Construction** | Validates the table, lets you choose the **axis for this run** (vertical “strictly above”, lateral “strictly to the left of”, or anteroposterior “strictly in front of”), shows the **Definition** dialog(s), and then opens the **Expert Query** window with Yes/No questions. Disabled until the query session is closed. Progress is autosaved after each answer. |
 
-Below the table you also choose the **axis for this run** (Vertical / Frontal). Left/right are always interpreted from the **patient’s perspective**.
+Below the table you also choose the **axis for this run** (Vertical / Lateral / Anteroposterior). Left/right are always interpreted from the **patient’s perspective**.
+
+The three axes follow a simple \([0, 100]\) convention in standard anatomical position:
+
+- **Vertical (Superior–Inferior)**: `0` = toes/feet, `100` = head/vertex.  
+- **Lateral (Right–Left)**: `0` = far right (e.g. right thumb), `100` = far left (e.g. left thumb), patient’s view.  
+- **Anteroposterior (Back–Front)**: `0` = back (dorsal), `100` = front (ventral).
 
 ### Definition dialog (before questions)
 
@@ -102,11 +112,11 @@ The questions are shown one per “card” with a flip animation between questio
 
 ## Code structure (high level)
 
-- **`Structure` (dataclass)**: Represents one anatomical structure with `name`, `com_vertical`, and `com_lateral` (patient-view left/right).
-- **`load_structures_from_json` / `save_poset_to_json` / `load_poset_from_json`**: I/O helpers for reading the structure list and saving/loading posets (both vertical and frontal edges in a single JSON).
+- **`Structure` (dataclass)**: Represents one anatomical structure with `name`, `com_vertical`, `com_lateral` (lateral right–left axis, patient-view), and `com_anteroposterior` (back–front axis).
+- **`load_structures_from_json` / `save_poset_to_json` / `load_poset_from_json`**: I/O helpers for reading the structure list and saving/loading posets (vertical, lateral, and anteroposterior edges in a single JSON, with backward compatibility for older files that only stored vertical or “frontal” edges).
 - **`PosetBuilder`**: Core algorithm; sorts structures by the chosen axis, iterates gap-wise over pairs, skips relations implied by transitivity, records answers, and returns the **transitive reduction** (Hasse edges).
-- **`HasseDiagramView`**: `QGraphicsView` that renders the Hasse diagram; vertical axis diagrams group by level top–down, frontal axis diagrams place nodes by `com_lateral` (left/right) along the x-axis.
-- **`PosetViewerWindow`**: Standalone viewer for saved posets with two tabs: **Vertical** and **Frontal**, each with a structure list and an interactive Hasse diagram.
+- **`HasseDiagramView`**: `QGraphicsView` that renders the directed Hasse diagram; all axes use a layered layout (levels top–down) while the chosen axis only changes which strict relation the directed edges encode (above, left-of, in-front-of).
+- **`PosetViewerWindow`**: Standalone viewer for saved posets with three tabs: **Vertical**, **Lateral**, and **Anteroposterior**, each with a structure list and an interactive Hasse diagram.
 - **`DefinitionDialog`**: Intro + instructions + examples shown before querying; text and examples are adapted to the selected axis.
 - **`QueryDialog`**: The questionnaire window: shows one pair at a time, collects Yes/No answers, supports Undo, drives autosave, shows progress, and ends with a thank-you message.
 - **`MainWindow`**: Entry point UI for defining structures, choosing the axis for the current run, launching the questionnaire, and opening the viewer.
