@@ -34,6 +34,31 @@ def _ensure_qt_platform_plugin_path() -> None:
         os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(platforms_dir))
 
 
+# Known plural anatomical terms (last word of structure name). Default is singular
+# so e.g. pelvis, lens, pons are correctly singular.
+_PLURAL_LAST_WORDS: frozenset[str] = frozenset(
+    {
+        "lungs", "kidneys", "glands", "nodes", "ribs", "bones", "adrenals",
+        "ovaries", "testes", "eyes", "ears", "nostrils", "hands", "feet",
+        "thumbs", "fingers", "toes", "tonsils", "vertebrae", "muscles",
+    }
+)
+
+
+def _is_plural_structure(name: str) -> bool:
+    """
+    Return True only if the structure name is known to be plural (main noun in
+    whitelist). Otherwise singular (e.g. pelvis, femur, liver, lens).
+    """
+    if not name or not name.strip():
+        return False
+    parts = name.strip().split()
+    if not parts:
+        return False
+    last = parts[-1].lower()
+    return last in _PLURAL_LAST_WORDS
+
+
 def _relation_verb(axis: str) -> str:
     if axis == AXIS_VERTICAL:
         return "strictly above"

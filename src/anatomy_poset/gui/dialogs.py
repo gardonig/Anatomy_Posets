@@ -1,16 +1,23 @@
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QDialog,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
+    QFileDialog,
+    QSlider,
+    QComboBox,
 )
 
 from ..core.builder import PosetBuilder
@@ -21,7 +28,146 @@ from ..core.models import (
     AXIS_VERTICAL,
     Structure,
 )
-from .utils import _relation_verb
+from .utils import _is_plural_structure, _relation_verb
+
+# Map structure names to view (Front/Side/Rear) -> filename
+_STRUCTURE_VIEWS: Dict[str, Dict[str, str]] = {
+    "Skeleton": {
+        "Front": "skeleton_front.png",
+        "Side": "skeleton_side.png",
+        "Rear": "skeleton_rear.png",
+    },
+    "muscles: sub-layer": {
+        "Front": "mm_sub_front.png",
+        "Side": "mm_sub_side.png",
+        "Rear": "mm_sub_rear.png",
+    },
+    "muscles: superficial": {
+        "Front": "mm_super_front.png",
+        "Side": "mm_super_side.png",
+        "Rear": "mm_super_rear.png",
+    },
+    "Gastrointestinal system": {
+        "Front": "gastro_front.png",
+        "Side": "gastro_side.png",
+        "Rear": "gastro_rear.png",
+    },
+    "Urinary / Genital / Respiratory / Endocrine": {
+        "Front": "ur_gen_resp_endocrin_front.png",
+        "Side": "ur_gen_resp_endocrin_side.png",
+        "Rear": "ur_gen_resp_endocrin_rear.png",
+    },
+}
+
+
+def _create_anatomy_views_panel(parent: QDialog) -> QWidget:
+    """Build the detailed anatomy views panel (structure tabs + rotations + image)."""
+    panel = QWidget(parent)
+    layout = QVBoxLayout(panel)
+
+    tabs = QTabWidget(panel)
+    images_dir = ASSETS_DIR / "images"
+    # Make the front/side/rear anatomy views tall so they fill the column
+    img_height = 460
+
+    for structure_name, views in _STRUCTURE_VIEWS.items():
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+
+        btn_row = QHBoxLayout()
+        image_label = ClickableImageLabel(f"{structure_name} — full view", parent)
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_label.setFixedHeight(img_height)
+        image_label.setStyleSheet(
+            "border: 1px solid #e0e0e0; border-radius: 8px; "
+            "background: #ffffff; padding: 4px; margin: 4px;"
+        )
+
+        buttons: Dict[str, QPushButton] = {}
+        group = QButtonGroup(panel)
+        group.setExclusive(True)
+
+        def _load_view(
+            label: ClickableImageLabel,
+            vdict: Dict[str, str],
+            view_key: str,
+        ) -> None:
+            """Load the requested view image into the label."""
+            filename = vdict.get(view_key)
+            if not filename:
+                label.setText(f"[No {view_key.lower()} view]")
+                label.setPixmap(QPixmap())
+                return
+            path = images_dir / filename
+            if not path.exists():
+                label.setText(f"[Missing: {filename}]")
+                label.setPixmap(QPixmap())
+                return
+            pix = QPixmap(str(path))
+            if pix.isNull():
+                label.setText(f"[Could not load: {filename}]")
+                label.setPixmap(QPixmap())
+                return
+            label.set_full_pixmap(pix)
+            label.setPixmap(pix.scaledToHeight(img_height, Qt.SmoothTransformation))
+
+        # Center the view buttons horizontally
+        btn_row.addStretch(1)
+
+        for view_key in ("Front", "Side", "Rear"):
+            btn = QPushButton(view_key)
+            btn.setCheckable(True)
+            btn.setStyleSheet(
+                """
+                QPushButton {
+                    padding: 4px 12px;
+                    border-radius: 4px;
+                    border: 1px solid #c0c0c5;
+                    background: #f2f2f7;
+                    color: #1a1a1a;
+                }
+                QPushButton:hover {
+                    background: #e0e0ea;
+                }
+                QPushButton:checked {
+                    background: #007aff;
+                    color: white;
+                    border-color: #0051d5;
+                }
+                """
+            )
+
+            def on_clicked(
+                checked: bool,  # noqa: ARG001
+                k: str = view_key,
+                vdict: Dict[str, str] = views,
+                label: ClickableImageLabel = image_label,
+            ) -> None:
+                # QButtonGroup ensures only one button is checked at a time.
+                _load_view(label, vdict, k)
+
+            btn.clicked.connect(on_clicked)
+            group.addButton(btn)
+            buttons[view_key] = btn
+            btn_row.addWidget(btn)
+
+        btn_row.addStretch(1)
+        tab_layout.addLayout(btn_row)
+        tab_layout.addWidget(image_label)
+
+        # Default view when the tab is opened
+        default_view = "Front" if "Front" in buttons else next(iter(buttons))
+        buttons[default_view].setChecked(True)
+        _load_view(image_label, views, default_view)
+
+        tabs.addTab(tab, structure_name)
+
+    layout.addWidget(tabs)
+    ca_note = QLabel("Structure view images are from Complete Anatomy.", panel)
+    ca_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    ca_note.setStyleSheet("color: #666666; font-size: 11px; margin-top: 2px;")
+    layout.addWidget(ca_note)
+    return panel
 
 
 class ImagePreviewDialog(QDialog):
@@ -34,9 +180,16 @@ class ImagePreviewDialog(QDialog):
         self.setWindowTitle(title or "Image preview")
         self.setModal(True)
         layout = QVBoxLayout(self)
-        label = QLabel()
+
+        label = ClickableImageLabel(preview_title=title or "Image preview", parent=self)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Show image at high quality using the original pixmap, scaling down only if needed.
+        # Full-screen preview should be zoomable/pannable but must not open itself again.
+        label.enable_interactive_view(True)
+        label.set_preview_click_enabled(False)
+        label.set_full_pixmap(pixmap)
+        layout.addWidget(label)
+
+        # Choose an initial window size that fits on screen.
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
@@ -46,35 +199,134 @@ class ImagePreviewDialog(QDialog):
             max_w = pixmap.width()
             max_h = pixmap.height()
 
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(120)
+        close_btn.setStyleSheet(
+            "QPushButton { margin-top: 8px; padding: 6px 16px; border-radius: 6px; "
+            "border: 1px solid #c0c0c5; background: #f2f2f7; color: #1a1a1a; }"
+            "QPushButton:hover { background: #e0e0ea; } QPushButton:pressed { background: #d0d0dd; }"
+        )
+        close_btn.clicked.connect(self.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(close_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
         target_w = min(pixmap.width(), max_w)
         target_h = min(pixmap.height(), max_h)
-        scaled = pixmap.scaled(
-            target_w,
-            target_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        label.setPixmap(scaled)
-        layout.addWidget(label)
-        self.resize(scaled.width() + 40, scaled.height() + 40)
+        self.resize(target_w + 40, target_h + 80)
 
 
 class ClickableImageLabel(QLabel):
     """
     QLabel that opens its pixmap in a full-window preview when clicked.
+    Shows "Click to enlarge" overlay on hover.
     """
 
     def __init__(self, preview_title: str | None = None, parent: QDialog | None = None) -> None:
         super().__init__(parent)
         self._preview_title = preview_title or "Image preview"
         self._full_pixmap: QPixmap | None = None
+        self._hovered = False
+        # Interactive zoom/pan is optional and disabled by default for embedded images.
+        self._interactive: bool = False
+        # Whether clicking should open a separate preview dialog.
+        self._allow_preview_click: bool = True
+        self._zoom: float = 1.0
+        self._offset_x: float = 0.0
+        self._offset_y: float = 0.0
+        self._panning: bool = False
+        self._last_pos = None
+        self.setMouseTracking(True)
 
     def set_full_pixmap(self, pixmap: QPixmap) -> None:
         """Store the original-resolution pixmap for high-quality preview."""
         self._full_pixmap = pixmap
+        self._zoom = 1.0
+        self._offset_x = 0.0
+        self._offset_y = 0.0
+
+    def enable_interactive_view(self, enabled: bool = True) -> None:
+        """Enable or disable scroll-to-zoom and drag-to-pan for this label."""
+        self._interactive = enabled
+        self._zoom = 1.0
+        self._offset_x = 0.0
+        self._offset_y = 0.0
+
+    def set_preview_click_enabled(self, enabled: bool = True) -> None:
+        """Enable or disable opening a new preview dialog when clicked."""
+        self._allow_preview_click = enabled
+
+    def enterEvent(self, event) -> None:  # type: ignore[override]
+        self._hovered = True
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        self._hovered = False
+        self.update()
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        base = self._full_pixmap or self.pixmap()
+        if base is not None and not base.isNull():
+            w = base.width()
+            h = base.height()
+            if w > 0 and h > 0:
+                # Compute a base scale that fits the full image into the label,
+                # then apply interactive zoom on top.
+                rect = self.rect()
+                sx = rect.width() / w
+                sy = rect.height() / h
+                base_scale = min(sx, sy)
+                scale = base_scale * self._zoom
+
+                target_w = w * scale
+                target_h = h * scale
+                cx = rect.center().x() + self._offset_x
+                cy = rect.center().y() + self._offset_y
+                target_rect = QRectF(
+                    cx - target_w / 2.0,
+                    cy - target_h / 2.0,
+                    target_w,
+                    target_h,
+                )
+                painter.drawPixmap(target_rect, base, QRectF(0, 0, w, h))
+
+        # Hover hint overlay
+        if self._hovered and base is not None and not base.isNull():
+            font = self.font()
+            font.setPointSize(max(10, font.pointSize() + 1))
+            painter.setFont(font)
+            text = "Click to enlarge"
+            fm = painter.fontMetrics()
+            tw, th = fm.horizontalAdvance(text), fm.height()
+            x, y = (self.rect().width() - tw) // 2, (self.rect().height() - th) // 2
+            painter.setPen(QColor(0, 0, 0, 80))
+            painter.drawText(x + 1, y + 1, text)
+            painter.setPen(QColor(255, 255, 255, 220))
+            painter.drawText(x, y, text)
+
+        painter.end()
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        if event.button() == Qt.MouseButton.LeftButton:
+        # Right- or middle-button drag: pan the zoomed image (only when interactive).
+        if self._interactive and event.button() in (
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.MiddleButton,
+        ):
+            base = self._full_pixmap or self.pixmap()
+            if base is not None and not base.isNull():
+                self._panning = True
+                self._last_pos = event.position()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
+
+        if event.button() == Qt.MouseButton.LeftButton and self._allow_preview_click:
             base = self._full_pixmap or self.pixmap()
             if base is None:
                 return
@@ -82,6 +334,281 @@ class ClickableImageLabel(QLabel):
             dlg.exec()
         else:
             super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        if self._interactive and self._panning and self._last_pos is not None:
+            delta = event.position() - self._last_pos
+            self._last_pos = event.position()
+            self._offset_x += delta.x()
+            self._offset_y += delta.y()
+            self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if self._interactive and self._panning and event.button() in (
+            Qt.MouseButton.RightButton,
+            Qt.MouseButton.MiddleButton,
+        ):
+            self._panning = False
+            self._last_pos = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        if not self._interactive:
+            # Default QLabel behaviour when interactive zoom is disabled.
+            super().wheelEvent(event)
+            return
+        base = self._full_pixmap or self.pixmap()
+        if base is None or base.isNull():
+            super().wheelEvent(event)
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        factor = 1.15 if delta > 0 else 1 / 1.15
+        self._zoom *= factor
+        # Clamp zoom to a reasonable range
+        self._zoom = max(0.2, min(self._zoom, 10.0))
+        self.update()
+
+
+class CoronalSlicesPanel(QWidget):
+    """
+    Embedded viewer for coronal image stacks (e.g. Visible Human PNG slices).
+    Designed to live in the right-hand side of the Query dialog.
+    """
+
+    def __init__(self, parent: QDialog | None = None) -> None:
+        super().__init__(parent)
+
+        self._base_dir: Path | None = None
+        self._stacks: Dict[str, List[Path]] = {}
+        self._current_region: str | None = None
+        self._current_index: int = 0
+
+        layout = QVBoxLayout(self)
+
+        # Top controls: choose folder + region selector
+        top_row = QHBoxLayout()
+        layout.addLayout(top_row)
+
+        self._choose_btn = QPushButton("Choose image folder…")
+        self._choose_btn.setToolTip(
+            "Select the folder that contains the subfolders with PNG slices "
+            "(e.g. head, thorax, abdomen, pelvis, thighs, legs)."
+        )
+        self._choose_btn.clicked.connect(self._select_base_folder)
+        top_row.addWidget(self._choose_btn)
+
+        top_row.addStretch(1)
+
+        self._region_combo = QComboBox()
+        self._region_combo.setEnabled(False)
+        self._region_combo.currentTextChanged.connect(self._on_region_changed)
+        top_row.addWidget(QLabel("Region:"))
+        top_row.addWidget(self._region_combo)
+
+        # Image + vertical navigation controls on the right
+        content_row = QHBoxLayout()
+        layout.addLayout(content_row)
+
+        self._image_label = ClickableImageLabel("Coronal slice — full view", parent=parent)
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Use a larger fixed height so the first slice starts very big and
+        # fills most of the vertical space next to the anatomy images.
+        self._image_label.setFixedHeight(600)
+        self._image_label.setStyleSheet(
+            "border: 1px solid #e0e0e0; border-radius: 8px; "
+            "background: #000000; padding: 4px; margin-top: 4px;"
+        )
+        content_row.addWidget(self._image_label, stretch=1)
+
+        right_col = QVBoxLayout()
+        content_row.addLayout(right_col)
+
+        self._prev_btn = QPushButton("▲")
+        self._prev_btn.setFixedWidth(32)
+        self._prev_btn.clicked.connect(self._step_prev)
+        self._prev_btn.setEnabled(False)
+        right_col.addWidget(self._prev_btn)
+
+        self._slider = QSlider(Qt.Orientation.Vertical)
+        self._slider.setMinimum(0)
+        self._slider.setMaximum(0)
+        self._slider.setSingleStep(1)
+        self._slider.setPageStep(10)
+        self._slider.setInvertedAppearance(True)  # first slice at the top
+        self._slider.setEnabled(False)
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        right_col.addWidget(self._slider, stretch=1)
+
+        self._next_btn = QPushButton("▼")
+        self._next_btn.setFixedWidth(32)
+        self._next_btn.clicked.connect(self._step_next)
+        self._next_btn.setEnabled(False)
+        right_col.addWidget(self._next_btn)
+
+        self._index_label = QLabel("Slice: – / –")
+        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_col.addWidget(self._index_label)
+
+        # Try to auto-load a default folder under assets:
+        # - Prefer assets/visible_human_male if it exists,
+        # - fall back to assets/visible_human.
+        default_base = None
+        vh_male = ASSETS_DIR / "visible_human_male"
+        vh_generic = ASSETS_DIR / "visible_human"
+        if vh_male.exists():
+            default_base = vh_male
+        elif vh_generic.exists():
+            default_base = vh_generic
+
+        if default_base is not None:
+            self._load_base_folder(default_base)
+            # If successful, we can hide the folder chooser so the user
+            # only needs the Region selector inside the GUI.
+            if self._stacks:
+                self._choose_btn.hide()
+        else:
+            # Helpful placeholder text when no default folder is available.
+            self._image_label.setText(
+                "Coronal slice viewer\n\n"
+                "Click 'Choose image folder…' and select the directory that contains\n"
+                "subfolders such as head, thorax, abdomen, pelvis, thighs, legs.\n"
+                "Then use the Region menu, slider, and arrows to browse slices."
+            )
+
+    # ---- Folder / stack handling ----
+    def _select_base_folder(self) -> None:
+        base = QFileDialog.getExistingDirectory(
+            self,
+            "Select base folder with coronal image stacks",
+            str(self._base_dir or ASSETS_DIR),
+        )
+        if not base:
+            return
+        self._load_base_folder(Path(base))
+
+    def _load_base_folder(self, base: Path) -> None:
+        if not base.exists() or not base.is_dir():
+            self._image_label.setText(
+                f"The selected folder does not exist or is not a directory:\n{base}"
+            )
+            self._image_label.setPixmap(QPixmap())
+            return
+
+        self._base_dir = base
+        self._stacks.clear()
+
+        for sub in sorted(base.iterdir()):
+            if not sub.is_dir():
+                continue
+            # Collect only PNG images (case-insensitive), ignore any .txt or other files.
+            pngs = sorted(
+                p
+                for p in sub.iterdir()
+                if p.is_file() and p.suffix.lower() == ".png"
+            )
+            if not pngs:
+                continue
+            self._stacks[sub.name] = pngs
+
+        self._region_combo.blockSignals(True)
+        self._region_combo.clear()
+        for region in sorted(self._stacks.keys()):
+            self._region_combo.addItem(region)
+        self._region_combo.blockSignals(False)
+
+        has_any = bool(self._stacks)
+        self._region_combo.setEnabled(has_any)
+        self._slider.setEnabled(has_any)
+        self._prev_btn.setEnabled(has_any)
+        self._next_btn.setEnabled(has_any)
+
+        if not has_any:
+            self._image_label.setText(
+                "No PNG image stacks were found.\n\n"
+                "The selected folder should contain subfolders (e.g. head, thorax, abdomen,\n"
+                "pelvis, thighs, legs) with .png slices inside each of them."
+            )
+            self._image_label.setPixmap(QPixmap())
+            self._index_label.setText("Slice: – / –")
+            return
+
+        first_region = self._region_combo.currentText()
+        if first_region:
+            self._on_region_changed(first_region)
+
+    # ---- Region / navigation ----
+    def _on_region_changed(self, region: str) -> None:
+        if not region or region not in self._stacks:
+            return
+        self._current_region = region
+        self._current_index = 0
+        num_slices = len(self._stacks[region])
+        self._slider.blockSignals(True)
+        self._slider.setMinimum(0)
+        self._slider.setMaximum(max(0, num_slices - 1))
+        self._slider.setValue(0)
+        self._slider.blockSignals(False)
+        self._update_image()
+
+    def _on_slider_changed(self, value: int) -> None:
+        self._current_index = int(value)
+        self._update_image()
+
+    def _step_prev(self) -> None:
+        if self._current_region is None:
+            return
+        if self._current_index <= 0:
+            return
+        self._current_index -= 1
+        self._slider.setValue(self._current_index)
+
+    def _step_next(self) -> None:
+        if self._current_region is None:
+            return
+        stack = self._stacks.get(self._current_region, [])
+        if not stack:
+            return
+        if self._current_index >= len(stack) - 1:
+            return
+        self._current_index += 1
+        self._slider.setValue(self._current_index)
+
+    def _update_image(self) -> None:
+        if self._current_region is None:
+            return
+        stack = self._stacks.get(self._current_region, [])
+        if not stack:
+            self._image_label.setText("[No slices found for this region]")
+            self._image_label.setPixmap(QPixmap())
+            self._index_label.setText("Slice: – / –")
+            return
+
+        idx = max(0, min(self._current_index, len(stack) - 1))
+        self._current_index = idx
+        path = stack[idx]
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self._image_label.setText(f"[Could not load slice: {path.name}]")
+            self._image_label.setPixmap(QPixmap())
+        else:
+            self._image_label.set_full_pixmap(pix)
+            # Keep a stable, large display size across slices.
+            target_h = self._image_label.height() or 360
+            self._image_label.setPixmap(
+                pix.scaledToHeight(
+                    target_h,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        self._index_label.setText(f"Slice: {idx + 1} / {len(stack)}")
 
 
 class DefinitionDialog(QDialog):
@@ -204,32 +731,20 @@ class VerticalDefinitionDialog(QDialog):
         left_col.addWidget(heading)
 
         text1 = QLabel(
-            "You will be asked whether one anatomical structure is strictly above another "
-            "along the superior–inferior (head–to–toes) axis."
+            'For each pair of structures you will answer "Yes" or "No" to:\n'
+            '  "Is the first structure strictly above the second along the superior–inferior (head–to–toes) axis?"'
         )
         text1.setWordWrap(True)
         text1.setStyleSheet(_text_style)
         left_col.addWidget(text1)
 
         text2 = QLabel(
-            "Definition: one structure is strictly above another if the lowest point of the upper structure "
-            "is higher than the highest point of the lower one."
+            "One structure is strictly above another if the lowest point of the upper structure is higher "
+            "than the highest point of the lower one."
         )
         text2.setWordWrap(True)
         text2.setStyleSheet(_text_style)
         left_col.addWidget(text2)
-
-        q_form_heading = QLabel("What you will be asked")
-        q_form_heading.setStyleSheet(_heading_style)
-        left_col.addWidget(q_form_heading)
-
-        q_form = QLabel(
-            'For each pair of structures you will answer "Yes" or "No" to:\n'
-            '  "Is the first structure strictly above the second?"'
-        )
-        q_form.setWordWrap(True)
-        q_form.setStyleSheet(_text_style)
-        left_col.addWidget(q_form)
 
         left_col.addStretch(1)
 
@@ -400,40 +915,29 @@ class MediolateralDefinitionDialog(QDialog):
         left_col.addWidget(heading)
 
         text1 = QLabel(
-            "You will be asked whether one anatomical structure is strictly to the left of another "
-            "along the right–left (lateral) axis, from the patient's perspective."
+            'For each pair of structures you will answer "Yes" or "No" to: '
+            '"Is the first structure strictly to the left of the second along the '
+            "right–left (lateral) axis, from the patient's perspective?"
         )
         text1.setWordWrap(True)
         text1.setStyleSheet(_text_style)
         left_col.addWidget(text1)
 
         text2 = QLabel(
-            "Definition: one structure is strictly to the left of another if the rightmost point of the first "
-            "is to the left of the leftmost point of the second."
+            "One structure is strictly to the left of another if the rightmost point of the first is to the left "
+            "of the leftmost point of the second."
         )
         text2.setWordWrap(True)
         text2.setStyleSheet(_text_style)
         left_col.addWidget(text2)
 
         patient_note = QLabel(
-            "Left and right are always defined from the patient's view: "
-            "the patient's right femur is to the right of the patient's left femur."
+            "Left and right are always defined from the patient's view: the patient's right femur is to the right "
+            "of the patient's left femur."
         )
         patient_note.setWordWrap(True)
         patient_note.setStyleSheet(_text_style)
         left_col.addWidget(patient_note)
-
-        q_form_heading = QLabel("What you will be asked")
-        q_form_heading.setStyleSheet(_heading_style)
-        left_col.addWidget(q_form_heading)
-
-        q_form = QLabel(
-            'For each pair of structures you will answer "Yes" or "No" to:\n'
-            '  "Is the first structure strictly to the left of the second?"'
-        )
-        q_form.setWordWrap(True)
-        q_form.setStyleSheet(_text_style)
-        left_col.addWidget(q_form)
 
         left_col.addStretch(1)
 
@@ -604,32 +1108,21 @@ class AnteroposteriorDefinitionDialog(QDialog):
         left_col.addWidget(heading)
 
         text1 = QLabel(
-            "You will be asked whether one anatomical structure is strictly in front of another "
-            "along the front–back (anteroposterior) axis."
+            'For each pair of structures you will answer "Yes" or "No" to:\n'
+            '  "Is the first structure strictly in front of the second along the front–back '
+            "(anteroposterior) axis?"
         )
         text1.setWordWrap(True)
         text1.setStyleSheet(_text_style)
         left_col.addWidget(text1)
 
         text2 = QLabel(
-            "Definition: one structure is strictly in front of another if the posterior-most point of the first "
-            "is anterior to the anterior-most point of the second."
+            "One structure is strictly in front of another if the posterior-most point of the first is anterior "
+            "to the anterior-most point of the second."
         )
         text2.setWordWrap(True)
         text2.setStyleSheet(_text_style)
         left_col.addWidget(text2)
-
-        q_form_heading = QLabel("What you will be asked")
-        q_form_heading.setStyleSheet(_heading_style)
-        left_col.addWidget(q_form_heading)
-
-        q_form = QLabel(
-            'For each pair of structures you will answer "Yes" or "No" to:\n'
-            '  "Is the first structure strictly in front of the second?"'
-        )
-        q_form.setWordWrap(True)
-        q_form.setStyleSheet(_text_style)
-        left_col.addWidget(q_form)
 
         left_col.addStretch(1)
 
@@ -785,7 +1278,7 @@ class QueryDialog(QDialog):
     ) -> None:
         super().__init__()
         self.setWindowTitle("Expert Query")
-        self.resize(520, 420)
+        self.resize(1100, 580)
         self.setModal(False)
 
         self.poset_builder = poset_builder
@@ -798,6 +1291,8 @@ class QueryDialog(QDialog):
 
         # For vertical axis, detect bilateral (Left/Right) cores to combine in question text
         self._bilateral_cores: Set[str] = set()
+        # For vertical axis, store combined CoM for bilateral cores (mean of Left/Right)
+        self._bilateral_core_com_vertical: Dict[str, float] = {}
         if self._axis == AXIS_VERTICAL:
             core_counts: Dict[str, int] = {}
             names = [s.name.strip() for s in self.poset_builder.structures]
@@ -810,20 +1305,66 @@ class QueryDialog(QDialog):
                     continue
                 core_counts[core] = core_counts.get(core, 0) + 1
             self._bilateral_cores = {c for c, cnt in core_counts.items() if cnt >= 2}
+            # Precompute vertical CoM for bilateral cores as the mean of their sides.
+            core_to_values: Dict[str, List[float]] = {}
+            for s in self.poset_builder.structures:
+                nm = s.name.strip()
+                if nm.startswith("Left "):
+                    core = nm[5:].strip()
+                elif nm.startswith("Right "):
+                    core = nm[6:].strip()
+                else:
+                    continue
+                if core in self._bilateral_cores:
+                    core_to_values.setdefault(core, []).append(s.com_vertical)
+            for core, vals in core_to_values.items():
+                if vals:
+                    self._bilateral_core_com_vertical[core] = sum(vals) / len(vals)
 
-        layout = QVBoxLayout(self)
+        main_layout = QHBoxLayout(self)
 
-        # Question card
+        # Middle column: questions (will be inserted between anatomy and coronal panels)
+        left_col = QVBoxLayout()
+
+        # Segmentation classes overview image above the question
+        overview_label = ClickableImageLabel("Segmentation classes overview — full view", self)
+        overview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overview_label.setFixedHeight(220)
+        overview_label.setStyleSheet(
+            "border: 1px solid #e0e0e0; border-radius: 8px; background: #ffffff; padding: 4px; margin: 8px 0 4px 0;"
+        )
+        overview_path = ASSETS_DIR / "definition_images" / "overview_classes_v2.png"
+        if overview_path.exists():
+            overview_pix = QPixmap(str(overview_path))
+            if not overview_pix.isNull():
+                overview_label.set_full_pixmap(overview_pix)
+                overview_label.setPixmap(
+                    overview_pix.scaledToHeight(220, Qt.SmoothTransformation)
+                )
+        if overview_label.pixmap() is None or overview_label.pixmap().isNull():
+            overview_label.setText("[Segmentation classes overview image missing]")
+        left_col.addWidget(overview_label)
+
+        overview_link = QLabel(
+            '<a href="https://github.com/wasserth/TotalSegmentator/blob/master/resources/imgs/overview_classes_v2.png">'
+            "Source: TotalSegmentator overview classes v2</a>",
+            self,
+        )
+        overview_link.setOpenExternalLinks(True)
+        overview_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overview_link.setStyleSheet("color: #0a66c2; font-size: 11px; margin-bottom: 4px;")
+        left_col.addWidget(overview_link)
+
+        # Question card (no border)
         self.question_card = QFrame()
-        self.question_card.setMinimumHeight(160)
+        self.question_card.setMinimumHeight(120)
         self.question_card.setStyleSheet(
             """
             QFrame {
                 background-color: #ffffff;
-                border: 1px solid #e0e0e0;
                 border-radius: 12px;
                 padding: 24px;
-                margin: 12px 0;
+                margin: 8px 0 12px 0;
             }
             """
         )
@@ -835,7 +1376,16 @@ class QueryDialog(QDialog):
             "color: #1a1a1a; font-size: 22px; font-weight: 500; line-height: 1.4;"
         )
         card_layout.addWidget(self.query_label)
-        layout.addWidget(self.question_card)
+
+        # Center of mass info for the current pair (per axis + pair mean)
+        self.com_label = QLabel("")
+        self.com_label.setWordWrap(True)
+        self.com_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.com_label.setStyleSheet(
+            "color: #555555; font-size: 13px; margin-top: 4px;"
+        )
+        card_layout.addWidget(self.com_label)
+        left_col.addWidget(self.question_card)
 
         # Back, Yes, No
         btn_row = QHBoxLayout()
@@ -891,7 +1441,7 @@ class QueryDialog(QDialog):
         btn_row.addWidget(self.not_sure_btn)
         btn_row.addWidget(self.yes_btn)
         btn_row.addStretch()
-        layout.addLayout(btn_row)
+        left_col.addLayout(btn_row)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -913,7 +1463,7 @@ class QueryDialog(QDialog):
             }
             """
         )
-        layout.addWidget(self.progress_bar)
+        left_col.addWidget(self.progress_bar)
 
         # Finish and Close (shown when done)
         self.finish_btn = QPushButton("Done")
@@ -929,7 +1479,43 @@ class QueryDialog(QDialog):
         )
         self.finish_btn.clicked.connect(self.accept)
         self.finish_btn.hide()
-        layout.addWidget(self.finish_btn)
+        left_col.addWidget(self.finish_btn)
+
+        # Right column: Anatomy Images + labels overview below
+        anatomy_group = QGroupBox("Anatomy Images")
+        anatomy_group.setStyleSheet(
+            "QGroupBox { font-weight: 600; font-size: 13px; }"
+        )
+        anatomy_layout = QVBoxLayout(anatomy_group)
+        anatomy_layout.addWidget(_create_anatomy_views_panel(self))
+
+        # Give the anatomy panel a tall left column with the front/side/rear views.
+        main_layout.addWidget(anatomy_group, stretch=1)
+
+        # Coronal slices viewer to support answering questions using slice stacks
+        coronal_group = QGroupBox("Coronal slices")
+        coronal_group.setStyleSheet(
+            "QGroupBox { font-weight: 600; font-size: 13px; }"
+        )
+        coronal_layout = QVBoxLayout(coronal_group)
+        coronal_panel = CoronalSlicesPanel(self)
+        coronal_layout.addWidget(coronal_panel)
+
+        # Data source note for the coronal slice viewer
+        vh_source = QLabel(
+            '<a href="https://data.lhncbc.nlm.nih.gov/public/Visible-Human/Male-Images/PNG_format/index.html">'
+            "Source: Visible Human Male coronal slices (NLM)</a>",
+            self,
+        )
+        vh_source.setOpenExternalLinks(True)
+        vh_source.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vh_source.setStyleSheet("color: #0a66c2; font-size: 11px; margin-top: 4px;")
+        coronal_layout.addWidget(vh_source)
+
+        main_layout.addWidget(coronal_group, stretch=2)
+
+        # Insert the question/CoM/controls column between anatomy and coronal panels
+        main_layout.insertLayout(1, left_col)
 
         self._advance_to_next_query()
 
@@ -962,7 +1548,38 @@ class QueryDialog(QDialog):
         verb = _relation_verb(self._axis)
         name_i = self._display_name(i, si.name)
         name_j = self._display_name(j, sj.name)
-        self.query_label.setText(f"Is/Are the {name_i} {verb} the {name_j}?")
+        subj_verb = "Are" if _is_plural_structure(name_i) else "Is"
+        self.query_label.setText(f"{subj_verb} the {name_i} {verb} the {name_j}?")
+        # Center of mass information: individual values and mean for the current axis
+        if self._axis == AXIS_VERTICAL:
+            # If bilateral cores are merged (Left/Right), use their combined CoM.
+            core_i = name_i if name_i in self._bilateral_core_com_vertical else None
+            core_j = name_j if name_j in self._bilateral_core_com_vertical else None
+            ci = (
+                self._bilateral_core_com_vertical[core_i]
+                if core_i is not None
+                else si.com_vertical
+            )
+            cj = (
+                self._bilateral_core_com_vertical[core_j]
+                if core_j is not None
+                else sj.com_vertical
+            )
+            axis_label = "vertical"
+        elif self._axis == AXIS_MEDIOLATERAL:
+            ci = si.com_lateral
+            cj = sj.com_lateral
+            axis_label = "lateral"
+        else:
+            ci = si.com_anteroposterior
+            cj = sj.com_anteroposterior
+            axis_label = "anteroposterior"
+        # One line per structure. For vertical axis, ci/cj may already be
+        # the mean of left/right when a bilateral core is combined.
+        self.com_label.setText(
+            f"{name_i}: CoM {axis_label} = {ci:.1f}\n"
+            f"{name_j}: CoM {axis_label} = {cj:.1f}"
+        )
         self._update_progress()
 
     def answer_query(self, is_above: Optional[bool]) -> None:
@@ -994,7 +1611,35 @@ class QueryDialog(QDialog):
         verb = _relation_verb(self._axis)
         name_i = self._display_name(last_i, si.name)
         name_j = self._display_name(last_j, sj.name)
-        self.query_label.setText(f"(Correcting) Is/Are the {name_i} {verb} the {name_j}?")
+        subj_verb = "Are" if _is_plural_structure(name_i) else "Is"
+        self.query_label.setText(f"(Correcting) {subj_verb} the {name_i} {verb} the {name_j}?")
+        # Refresh CoM info for the corrected pair
+        if self._axis == AXIS_VERTICAL:
+            core_i = name_i if name_i in self._bilateral_core_com_vertical else None
+            core_j = name_j if name_j in self._bilateral_core_com_vertical else None
+            ci = (
+                self._bilateral_core_com_vertical[core_i]
+                if core_i is not None
+                else si.com_vertical
+            )
+            cj = (
+                self._bilateral_core_com_vertical[core_j]
+                if core_j is not None
+                else sj.com_vertical
+            )
+            axis_label = "vertical"
+        elif self._axis == AXIS_MEDIOLATERAL:
+            ci = si.com_lateral
+            cj = sj.com_lateral
+            axis_label = "lateral"
+        else:
+            ci = si.com_anteroposterior
+            cj = sj.com_anteroposterior
+            axis_label = "anteroposterior"
+        self.com_label.setText(
+            f"{name_i}: CoM {axis_label} = {ci:.1f}\n"
+            f"{name_j}: CoM {axis_label} = {cj:.1f}"
+        )
         self.yes_btn.setEnabled(True)
         self.no_btn.setEnabled(True)
         self.not_sure_btn.setEnabled(True)

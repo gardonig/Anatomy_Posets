@@ -1,7 +1,7 @@
 from typing import Dict, List, Set, Tuple
 import math
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsScene,
@@ -14,6 +14,11 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QSlider,
+    QComboBox,
 )
 
 from ..core.io import load_poset_from_json
@@ -23,6 +28,243 @@ from ..core.models import (
     AXIS_VERTICAL,
     Structure,
 )
+from ..core.config import ASSETS_DIR
+from .dialogs import ClickableImageLabel
+
+
+class CoronalSliceViewer(QWidget):
+    """
+    Viewer for coronal image stacks (e.g. Visible Human PNG slices).
+    Lets the user pick a base folder and then browse stacks by region with a slider and arrow buttons.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Coronal Slice Viewer")
+        self.resize(900, 720)
+
+        self._base_dir: str | None = None
+        self._stacks: Dict[str, List[str]] = {}
+        self._current_region: str | None = None
+        self._current_index: int = 0
+        # Cache loaded pixmaps to keep scrubbing responsive.
+        self._pixmap_cache: Dict[str, QPixmap] = {}
+
+        root = QVBoxLayout(self)
+
+        # Top controls: data folder chooser + region selector
+        top_row = QHBoxLayout()
+        root.addLayout(top_row)
+
+        self._choose_btn = QPushButton("Choose image folder…")
+        self._choose_btn.setToolTip(
+            "Select the folder that contains the subfolders "
+            "e.g. head, thorax, abdomen, pelvis, thighs, legs"
+        )
+        self._choose_btn.clicked.connect(self._select_base_folder)
+        top_row.addWidget(self._choose_btn)
+
+        top_row.addStretch(1)
+
+        self._region_combo = QComboBox()
+        self._region_combo.setEnabled(False)
+        self._region_combo.currentTextChanged.connect(self._on_region_changed)
+        top_row.addWidget(QLabel("Region:"))
+        top_row.addWidget(self._region_combo)
+
+        # Image area
+        self._image_label = ClickableImageLabel("Coronal slice — full view", parent=self)
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setStyleSheet(
+            "border: 1px solid #e0e0e0; border-radius: 8px; "
+            "background: #000000; padding: 4px; margin: 8px;"
+        )
+        self._image_label.setMinimumHeight(540)
+        root.addWidget(self._image_label, stretch=1)
+
+        # Navigation controls: left / slider / right
+        nav_row = QHBoxLayout()
+        root.addLayout(nav_row)
+
+        self._prev_btn = QPushButton("◀")
+        self._prev_btn.setFixedWidth(40)
+        self._prev_btn.clicked.connect(self._step_prev)
+        self._prev_btn.setEnabled(False)
+        nav_row.addWidget(self._prev_btn)
+
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setMinimum(0)
+        self._slider.setMaximum(0)
+        self._slider.setSingleStep(1)
+        self._slider.setPageStep(10)
+        self._slider.setEnabled(False)
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        nav_row.addWidget(self._slider, stretch=1)
+
+        self._next_btn = QPushButton("▶")
+        self._next_btn.setFixedWidth(40)
+        self._next_btn.clicked.connect(self._step_next)
+        self._next_btn.setEnabled(False)
+        nav_row.addWidget(self._next_btn)
+
+        self._index_label = QLabel("Slice: – / –")
+        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        nav_row.addWidget(self._index_label)
+
+        # If the assets live inside the repository, offer them as a default base folder.
+        # Prefer assets/visible_human_male, fall back to assets/visible_human.
+        default_base = None
+        vh_male = ASSETS_DIR / "visible_human_male"
+        vh_generic = ASSETS_DIR / "visible_human"
+        if vh_male.exists():
+            default_base = vh_male
+        elif vh_generic.exists():
+            default_base = vh_generic
+
+        if default_base is not None:
+            self._load_base_folder(str(default_base))
+        else:
+            # Otherwise prompt the user the first time
+            self._select_base_folder(initial_prompt=True)
+
+    def _select_base_folder(self, initial_prompt: bool = False) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select base folder with coronal image stacks",
+            self._base_dir or str(ASSETS_DIR),
+        )
+        if not folder:
+            if initial_prompt:
+                # Show a gentle hint if the viewer is opened without a valid folder.
+                self._image_label.setText(
+                    "No image folder selected.\n\n"
+                    "Click 'Choose image folder…' to pick the directory that contains\n"
+                    "subfolders such as head, thorax, abdomen, pelvis, thighs, legs."
+                )
+            return
+        self._load_base_folder(folder)
+
+    def _load_base_folder(self, folder: str) -> None:
+        from pathlib import Path
+
+        base = Path(folder)
+        if not base.exists() or not base.is_dir():
+            QMessageBox.warning(
+                self,
+                "Folder not found",
+                f"The selected folder does not exist or is not a directory:\n{folder}",
+            )
+            return
+
+        self._base_dir = folder
+        self._stacks.clear()
+
+        # Discover subfolders with PNG slices (case-insensitive), ignore other files like .txt
+        for sub in sorted(base.iterdir()):
+            if not sub.is_dir():
+                continue
+            pngs = sorted(
+                str(p)
+                for p in sub.iterdir()
+                if p.is_file() and p.suffix.lower() == ".png"
+            )
+            if not pngs:
+                continue
+            self._stacks[sub.name] = pngs
+
+        self._region_combo.blockSignals(True)
+        self._region_combo.clear()
+        for region in sorted(self._stacks.keys()):
+            self._region_combo.addItem(region)
+        self._region_combo.blockSignals(False)
+
+        has_any = bool(self._stacks)
+        self._region_combo.setEnabled(has_any)
+        self._slider.setEnabled(has_any)
+        self._prev_btn.setEnabled(has_any)
+        self._next_btn.setEnabled(has_any)
+
+        if not has_any:
+            self._image_label.setText(
+                "No PNG image stacks were found.\n\n"
+                "The selected folder should contain subfolders (e.g. head, thorax, abdomen, pelvis,\n"
+                "thighs, legs) with .png slices inside each of them."
+            )
+            self._index_label.setText("Slice: – / –")
+            return
+
+        # Select the first region by default
+        first_region = self._region_combo.currentText()
+        if first_region:
+            self._on_region_changed(first_region)
+
+    def _on_region_changed(self, region: str) -> None:
+        if not region or region not in self._stacks:
+            return
+        self._current_region = region
+        self._current_index = 0
+        num_slices = len(self._stacks[region])
+        self._slider.blockSignals(True)
+        self._slider.setMinimum(0)
+        self._slider.setMaximum(max(0, num_slices - 1))
+        self._slider.setValue(0)
+        self._slider.blockSignals(False)
+        self._update_image()
+
+    def _on_slider_changed(self, value: int) -> None:
+        self._current_index = int(value)
+        self._update_image()
+
+    def _step_prev(self) -> None:
+        if self._current_region is None:
+            return
+        if self._current_index <= 0:
+            return
+        self._current_index -= 1
+        self._slider.setValue(self._current_index)
+
+    def _step_next(self) -> None:
+        if self._current_region is None:
+            return
+        stack = self._stacks.get(self._current_region, [])
+        if not stack:
+            return
+        if self._current_index >= len(stack) - 1:
+            return
+        self._current_index += 1
+        self._slider.setValue(self._current_index)
+
+    def _update_image(self) -> None:
+        if self._current_region is None:
+            return
+        stack = self._stacks.get(self._current_region, [])
+        if not stack:
+            self._image_label.setText("[No slices found for this region]")
+            self._image_label.setPixmap(QPixmap())
+            self._index_label.setText("Slice: – / –")
+            return
+
+        idx = max(0, min(self._current_index, len(stack) - 1))
+        self._current_index = idx
+        path = stack[idx]
+        # Use cache to avoid re-reading from disk on every slider tick.
+        pix = self._pixmap_cache.get(path)
+        if pix is None:
+            pix = QPixmap(path)
+            if not pix.isNull():
+                if len(self._pixmap_cache) > 1000:
+                    self._pixmap_cache.clear()
+                self._pixmap_cache[path] = pix
+        if pix.isNull():
+            from pathlib import Path as _Path
+
+            self._image_label.setText(f"[Could not load slice: {_Path(path).name}]")
+            self._image_label.setPixmap(QPixmap())
+        else:
+            self._image_label.set_full_pixmap(pix)
+            # Let ClickableImageLabel handle drawing/scaling; just trigger repaint.
+            self._image_label.update()
+        self._index_label.setText(f"Slice: {idx + 1} / {len(stack)}")
 
 
 class HasseDiagramView(QGraphicsView):
@@ -357,3 +599,163 @@ class PosetViewerWindow(QWidget):
             "in front of",
         )
         self._tabs.addTab(ap_widget, "Anteroposterior (front–back)")
+
+
+class StructureViewsWindow(QWidget):
+    """
+    Image-based atlas of anatomical structures and standard views.
+    Users can navigate through structures (tabs) and rotations (front / side / rear).
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Anatomy Views")
+        self.resize(1000, 720)
+
+        self._tabs = QTabWidget()
+        root = QVBoxLayout(self)
+        root.addWidget(self._tabs)
+
+        # Map structures and rotations to asset filenames
+        self._structure_views: Dict[str, Dict[str, str]] = {
+            "Skeleton": {
+                "Front": "skeleton_front.png",
+                "Side": "skeleton_side.png",
+                "Rear": "skeleton_rear.png",
+            },
+            "Superficial muscles": {
+                "Front": "mm_super_front.png",
+                "Side": "mm_super_side.png",
+                "Rear": "mm_super_rear.png",
+            },
+            "Subcutaneous muscles": {
+                "Front": "mm_sub_front.png",
+                "Side": "mm_sub_side.png",
+                "Rear": "mm_sub_rear.png",
+            },
+            "Gastrointestinal system": {
+                "Front": "gastro_front.png",
+                "Side": "gastro_side.png",
+                "Rear": "gastro_rear.png",
+            },
+            "Urinary / Genital / Respiratory / Endocrine": {
+                "Front": "ur_gen_resp_endocrin_front.png",
+                "Side": "ur_gen_resp_endocrin_side.png",
+                "Rear": "ur_gen_resp_endocrin_rear.png",
+            },
+        }
+
+        for structure_name, views in self._structure_views.items():
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+
+            heading = QLabel(structure_name)
+            heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            heading.setStyleSheet(
+                "font-size: 18px; font-weight: 600; margin-bottom: 8px; color: #1a1a1a;"
+            )
+            layout.addWidget(heading)
+
+            # View selector buttons
+            btn_row = QHBoxLayout()
+            layout.addLayout(btn_row)
+
+            image_label = ClickableImageLabel(
+                f"{structure_name} — full view", parent=self
+            )
+            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            image_label.setFixedHeight(540)
+            image_label.setStyleSheet(
+                "border: 1px solid #e0e0e0; border-radius: 8px; "
+                "background: #ffffff; padding: 4px; margin: 8px;"
+            )
+            layout.addWidget(image_label)
+
+            def make_handler(view_key: str, label: ClickableImageLabel) -> None:
+                def _handler() -> None:
+                    filename = views.get(view_key)
+                    if not filename:
+                        label.setText(f"[No {view_key.lower()} view image available]")
+                        label.setPixmap(QPixmap())
+                        return
+                    path = ASSETS_DIR / "images" / filename
+                    if not path.exists():
+                        label.setText(f"[Missing image: {filename}]")
+                        label.setPixmap(QPixmap())
+                        return
+                    pix = QPixmap(str(path))
+                    if pix.isNull():
+                        label.setText(f"[Could not load image: {filename}]")
+                        label.setPixmap(QPixmap())
+                        return
+                    label.set_full_pixmap(pix)
+                    label.setPixmap(
+                        pix.scaledToHeight(540, Qt.SmoothTransformation)
+                    )
+
+                return _handler
+
+            # Create buttons in an intuitive left-to-right order
+            buttons: Dict[str, QPushButton] = {}
+            for view_key in ("Front", "Side", "Rear"):
+                btn = QPushButton(view_key)
+                btn.setCheckable(True)
+                btn.setStyleSheet(
+                    """
+                    QPushButton {
+                        padding: 6px 16px;
+                        border-radius: 6px;
+                        border: 1px solid #d0d0d0;
+                        background-color: #f5f5f5;
+                    }
+                    QPushButton:hover {
+                        background-color: #eaeaea;
+                    }
+                    QPushButton:checked {
+                        background-color: #007aff;
+                        color: white;
+                        border-color: #0051d5;
+                    }
+                    """
+                )
+
+                def on_clicked(checked: bool, key: str = view_key) -> None:  # type: ignore[override]
+                    if not checked:
+                        # Keep one view active; ignore unchecking
+                        btn.setChecked(True)
+                        return
+                    for other_key, other_btn in buttons.items():
+                        if other_key != key:
+                            other_btn.setChecked(False)
+                    make_handler(key, image_label)()
+
+                btn.clicked.connect(on_clicked)
+                buttons[view_key] = btn
+                btn_row.addWidget(btn)
+
+            btn_row.addStretch(1)
+
+            # Load default view (Front) on startup
+            default_view = "Front" if "Front" in views else next(iter(views))
+            if default_view in buttons:
+                buttons[default_view].setChecked(True)
+                make_handler(default_view, image_label)()
+
+            self._tabs.addTab(tab, structure_name)
+
+        # Coronal slice viewer entry point
+        bottom_row = QHBoxLayout()
+        root.addLayout(bottom_row)
+        bottom_row.addStretch(1)
+        open_coronal_btn = QPushButton("Open coronal slice viewer…")
+        open_coronal_btn.setToolTip(
+            "Browse coronal image stacks (e.g. Visible Human) with a slider and arrow keys."
+        )
+
+        def _open_coronal_viewer() -> None:
+            viewer = CoronalSliceViewer(self)
+            viewer.show()
+
+        open_coronal_btn.clicked.connect(_open_coronal_viewer)
+        bottom_row.addWidget(open_coronal_btn)
+        bottom_row.addStretch(1)

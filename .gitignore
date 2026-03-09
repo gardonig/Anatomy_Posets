@@ -15,6 +15,7 @@ Thumbs.db
 # Project specific data
 # We ignore the output files so user data isn't pushed to the repository
 data/Output_constructed_posets/*.json
+assets/visible_human_male/
 
 # Keep the directory structure but ignore the contents
 !data/Output_constructed_posets/.gitkeep
