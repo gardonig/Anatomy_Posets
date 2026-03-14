@@ -17,5 +17,8 @@ Thumbs.db
 data/Output_constructed_posets/*.json
 assets/visible_human_male/
 
+# Large generated tensors
+full_body_tensor*.npy
+
 # Keep the directory structure but ignore the contents
 !data/Output_constructed_posets/.gitkeep

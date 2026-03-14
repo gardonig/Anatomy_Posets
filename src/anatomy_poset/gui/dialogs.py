@@ -1,8 +1,9 @@
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+import numpy as np
 from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -77,7 +78,8 @@ def _create_anatomy_views_panel(parent: QDialog) -> QWidget:
         btn_row = QHBoxLayout()
         image_label = ClickableImageLabel(f"{structure_name} — full view", parent)
         image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image_label.setFixedHeight(img_height)
+        # Allow the image to grow when the window is resized while keeping a sensible minimum.
+        image_label.setMinimumHeight(img_height)
         image_label.setStyleSheet(
             "border: 1px solid #e0e0e0; border-radius: 8px; "
             "background: #ffffff; padding: 4px; margin: 4px;"
@@ -185,6 +187,8 @@ class ImagePreviewDialog(QDialog):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Full-screen preview should be zoomable/pannable but must not open itself again.
         label.enable_interactive_view(True)
+        # In preview mode we want to fit as large as possible.
+        label.set_fit_scale(1.0)
         label.set_preview_click_enabled(False)
         label.set_full_pixmap(pixmap)
         layout.addWidget(label)
@@ -229,6 +233,8 @@ class ClickableImageLabel(QLabel):
         self._preview_title = preview_title or "Image preview"
         self._full_pixmap: QPixmap | None = None
         self._hovered = False
+        # Slightly shrink the fitted image so it never touches the border/padding.
+        self._fit_scale: float = 0.94
         # Interactive zoom/pan is optional and disabled by default for embedded images.
         self._interactive: bool = False
         # Whether clicking should open a separate preview dialog.
@@ -246,6 +252,11 @@ class ClickableImageLabel(QLabel):
         self._zoom = 1.0
         self._offset_x = 0.0
         self._offset_y = 0.0
+
+    def set_fit_scale(self, scale: float) -> None:
+        """Controls how large the fitted image appears inside the label (1.0 = max fit)."""
+        self._fit_scale = max(0.2, min(float(scale), 1.0))
+        self.update()
 
     def enable_interactive_view(self, enabled: bool = True) -> None:
         """Enable or disable scroll-to-zoom and drag-to-pan for this label."""
@@ -281,7 +292,7 @@ class ClickableImageLabel(QLabel):
                 rect = self.rect()
                 sx = rect.width() / w
                 sy = rect.height() / h
-                base_scale = min(sx, sy)
+                base_scale = min(sx, sy) * self._fit_scale
                 scale = base_scale * self._zoom
 
                 target_w = w * scale
@@ -419,9 +430,9 @@ class CoronalSlicesPanel(QWidget):
 
         self._image_label = ClickableImageLabel("Coronal slice — full view", parent=parent)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Use a larger fixed height so the first slice starts very big and
-        # fills most of the vertical space next to the anatomy images.
-        self._image_label.setFixedHeight(600)
+        # Use a generous minimum height, but allow the label to grow/shrink
+        # with the window so users can resize freely.
+        self._image_label.setMinimumHeight(600)
         self._image_label.setStyleSheet(
             "border: 1px solid #e0e0e0; border-radius: 8px; "
             "background: #000000; padding: 4px; margin-top: 4px;"
@@ -611,6 +622,504 @@ class CoronalSlicesPanel(QWidget):
         self._index_label.setText(f"Slice: {idx + 1} / {len(stack)}")
 
 
+class SliceLocationWidget(QWidget):
+    """
+    Small widget that shows a human outline and a red line indicating the current
+    slice position along the body. Used next to the full-body slice slider to give
+    a quick "where in the body" cue for axial (head→feet), coronal (front→back),
+    and sagittal (left→right) planes.
+    """
+
+    def __init__(self, outline_path: Path | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        # Axial / sagittal use the standard outline; coronal uses a dedicated coronal outline.
+        self._outline_axial_sagittal = outline_path or (ASSETS_DIR / "images" / "human_outline.png")
+        self._outline_coronal = ASSETS_DIR / "images" / "human_outline_coronal.png"
+        self._pixmap: QPixmap | None = None
+        self._plane = "axial"
+        self._min_val = 0
+        self._max_val = 0
+        self._value = 0
+        self.setFixedWidth(52)
+        self.setMinimumHeight(140)
+        self.setToolTip("Slice position in body")
+
+        self._reload_pixmap()
+
+    def _reload_pixmap(self) -> None:
+        if self._plane == "coronal" and self._outline_coronal.exists():
+            path = self._outline_coronal
+        else:
+            path = self._outline_axial_sagittal
+        self._pixmap = QPixmap(str(path)) if path.exists() else None
+
+    def set_plane(self, plane: str) -> None:
+        self._plane = plane.lower()
+        self._reload_pixmap()
+        self.update()
+
+    def set_range(self, min_val: int, max_val: int) -> None:
+        self._min_val = min_val
+        self._max_val = max_val
+        self.update()
+
+    def set_value(self, value: int) -> None:
+        self._value = value
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: ARG002
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        rect = self.rect()
+        if self._pixmap is None or self._pixmap.isNull():
+            painter.fillRect(rect, QColor(240, 240, 245))
+            painter.setPen(QPen(QColor(120, 120, 120)))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "No\noutline")
+            return
+        # Scale outline to fit widget, preserving aspect ratio
+        px_rect = self._pixmap.rect()
+        if px_rect.isEmpty():
+            return
+        scale = min(rect.width() / px_rect.width(), rect.height() / px_rect.height())
+        w = max(1, int(px_rect.width() * scale))
+        h = max(1, int(px_rect.height() * scale))
+        x = (rect.width() - w) // 2
+        y = (rect.height() - h) // 2
+        target_rect = QRectF(x, y, w, h)
+        painter.drawPixmap(target_rect, self._pixmap, QRectF(px_rect))
+
+        # Red line position: t in [0, 1] from slice index.
+        # For axial we map min->top of the outline and max->bottom of the outline.
+        # For sagittal / coronal we map min->left edge of the outline and max->right edge.
+        span = max(1, self._max_val - self._min_val)
+        t = (self._value - self._min_val) / span if span else 0.5
+        t = max(0.0, min(1.0, t))
+        pen = QPen(QColor(220, 50, 50))
+        pen.setWidth(3)
+        painter.setPen(pen)
+        if self._plane in ("sagittal", "coronal"):
+            # Vertical line over the outline: left (min) to right (max)
+            x_line = target_rect.left() + t * max(1.0, target_rect.width() - 1.0)
+            painter.drawLine(
+                int(x_line),
+                int(target_rect.top()),
+                int(x_line),
+                int(target_rect.bottom()),
+            )
+        else:
+            # Axial: horizontal line, top = head (min), bottom = feet (max)
+            y_line = target_rect.top() + t * max(1.0, target_rect.height() - 1.0)
+            painter.drawLine(
+                int(target_rect.left()),
+                int(y_line),
+                int(target_rect.right()),
+                int(y_line),
+            )
+
+
+class FullBodyVolumePanel(QWidget):
+    """
+    Embedded viewer for the downsampled full-body volume stored as a NumPy tensor.
+    Designed to live alongside the coronal slice stacks in the Query dialog.
+    """
+
+    def __init__(self, parent: QDialog | None = None) -> None:
+        super().__init__(parent)
+
+        self._volume: np.ndarray | None = None  # shape (Z, Y, X)
+        self._plane: str = "axial"  # axial / coronal / sagittal
+        self._index: int = 0
+
+        layout = QVBoxLayout(self)
+
+        # Plane selector: centered in the top row, similar to the Anatomy Images window.
+        plane_row = QHBoxLayout()
+        plane_row.addStretch(1)
+        plane_row.addWidget(QLabel("Plane:"))
+        # Map human-readable label -> button (keys keep original casing so comparisons match).
+        self._plane_buttons: Dict[str, QPushButton] = {}
+        self._plane_button_group = QButtonGroup(self)
+        self._plane_button_group.setExclusive(True)
+
+        for label in ("Axial", "Coronal", "Sagittal"):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(
+                """
+                QPushButton {
+                    padding: 4px 12px;
+                    border-radius: 4px;
+                    border: 1px solid #c0c0c5;
+                    background: #f2f2f7;
+                    color: #1a1a1a;
+                }
+                QPushButton:hover {
+                    background: #e0e0ea;
+                }
+                QPushButton:checked {
+                    background: #007aff;
+                    color: white;
+                    border-color: #0051d5;
+                }
+                """
+            )
+
+            def on_clicked(
+                checked: bool,  # noqa: ARG001
+                name: str = label,
+            ) -> None:
+                # QButtonGroup enforces exclusivity; we only need to react when a button becomes checked.
+                if checked:
+                    self._on_plane_changed(name)
+
+            btn.clicked.connect(on_clicked)
+            self._plane_button_group.addButton(btn)
+            self._plane_buttons[label] = btn
+            plane_row.addWidget(btn)
+
+        plane_row.addStretch(1)
+        layout.addLayout(plane_row)
+
+        # Second row: volume chooser aligned to the left.
+        top_row = QHBoxLayout()
+        layout.addLayout(top_row)
+
+        self._choose_btn = QPushButton("Choose volume (.npy)…")
+        self._choose_btn.setToolTip(
+            "Select a NumPy tensor file containing the full-body volume (e.g. full_body_tensor.npy)."
+        )
+        self._choose_btn.clicked.connect(self._select_tensor_file)
+        top_row.addWidget(self._choose_btn)
+        top_row.addStretch(1)
+
+        # Default to axial plane (internal state starts as "axial").
+        self._plane_buttons["Axial"].setChecked(True)
+
+        # Image + vertical navigation controls on the right (match CoronalSlicesPanel layout)
+        content_row = QHBoxLayout()
+        layout.addLayout(content_row)
+
+        self._image_label = ClickableImageLabel("Full-body slice — full view", parent=parent)
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setMinimumHeight(300)
+        self._image_label.setStyleSheet(
+            "border: 1px solid #e0e0e0; border-radius: 8px; "
+            "background: #000000; padding: 4px; margin-top: 4px;"
+        )
+        content_row.addWidget(self._image_label, stretch=1)
+
+        right_col = QHBoxLayout()
+        content_row.addLayout(right_col)
+
+        self._slice_location = SliceLocationWidget(
+            ASSETS_DIR / "images" / "human_outline.png",
+            parent=self,
+        )
+        right_col.addWidget(self._slice_location)
+
+        slider_col = QVBoxLayout()
+        right_col.addLayout(slider_col)
+
+        self._prev_btn = QPushButton("▲")
+        self._prev_btn.setFixedWidth(32)
+        self._prev_btn.clicked.connect(self._step_prev)
+        self._prev_btn.setEnabled(False)
+        slider_col.addWidget(self._prev_btn)
+
+        # Vertical slider used for axial and coronal planes.
+        self._slider = QSlider(Qt.Orientation.Vertical)
+        self._slider.setMinimum(0)
+        self._slider.setMaximum(0)
+        self._slider.setSingleStep(1)
+        self._slider.setPageStep(10)
+        # First slice at the bottom, last slice at the top.
+        self._slider.setInvertedAppearance(False)
+        self._slider.setEnabled(False)
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        slider_col.addWidget(self._slider, stretch=1)
+
+        self._next_btn = QPushButton("▼")
+        self._next_btn.setFixedWidth(32)
+        self._next_btn.clicked.connect(self._step_next)
+        self._next_btn.setEnabled(False)
+        slider_col.addWidget(self._next_btn)
+
+        self._index_label = QLabel("Slice: – / –")
+        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        slider_col.addWidget(self._index_label)
+
+        # Horizontal slider + fine-step arrows at the bottom, used only for sagittal plane so that
+        # left/right movement of the slider matches left/right of the body.
+        bottom_row = QHBoxLayout()
+        layout.addLayout(bottom_row)
+
+        self._bottom_prev_btn = QPushButton("◀")
+        self._bottom_prev_btn.setFixedWidth(32)
+        self._bottom_prev_btn.setEnabled(False)
+        self._bottom_prev_btn.clicked.connect(self._step_prev)
+        self._bottom_prev_btn.setVisible(False)
+        bottom_row.addWidget(self._bottom_prev_btn)
+
+        self._bottom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._bottom_slider.setMinimum(0)
+        self._bottom_slider.setMaximum(0)
+        self._bottom_slider.setSingleStep(1)
+        self._bottom_slider.setPageStep(10)
+        self._bottom_slider.setEnabled(False)
+        self._bottom_slider.valueChanged.connect(self._on_bottom_slider_changed)
+        self._bottom_slider.setVisible(False)
+        bottom_row.addWidget(self._bottom_slider, stretch=1)
+
+        self._bottom_next_btn = QPushButton("▶")
+        self._bottom_next_btn.setFixedWidth(32)
+        self._bottom_next_btn.setEnabled(False)
+        self._bottom_next_btn.clicked.connect(self._step_next)
+        self._bottom_next_btn.setVisible(False)
+        bottom_row.addWidget(self._bottom_next_btn)
+
+        # Try to auto-load a default tensor: prefer assets/full_body_tensor.npy, then repo root.
+        self._try_auto_load_tensor()
+
+    # ---- Tensor loading ----
+    def _select_tensor_file(self) -> None:
+        base = QFileDialog.getOpenFileName(
+            self,
+            "Select NumPy volume file",
+            str(ASSETS_DIR),
+            "NumPy files (*.npy *.npz);;All files (*)",
+        )[0]
+        if not base:
+            return
+        self._load_tensor(Path(base))
+
+    def _try_auto_load_tensor(self) -> None:
+        candidates: List[Path] = []
+        # Prefer the RGB tensor generated by view_full_body_male.py, then fall back to grayscale.
+        candidates.append(ASSETS_DIR / "full_body_tensor_rgb.npy")
+        candidates.append(ASSETS_DIR / "full_body_tensor.npy")
+        try:
+            repo_root = Path(__file__).resolve().parents[3]
+            candidates.append(repo_root / "full_body_tensor_rgb.npy")
+            candidates.append(repo_root / "full_body_tensor.npy")
+        except Exception:
+            pass
+
+        for p in candidates:
+            if p.exists():
+                self._load_tensor(p)
+                return
+
+        self._image_label.setText(
+            "Full-body volume viewer\n\n"
+            "Click 'Choose volume (.npy)…' to load a NumPy tensor created from the\n"
+            "downsampled full-body slices."
+        )
+
+    def _load_tensor(self, path: Path) -> None:
+        try:
+            arr = np.load(str(path))
+        except Exception as exc:  # noqa: BLE001
+            self._image_label.setText(f"[Could not load NumPy array: {exc}]")
+            self._image_label.setPixmap(QPixmap())
+            return
+
+        if arr.ndim not in (3, 4):
+            self._image_label.setText(f"[Expected a 3D or 4D RGB array, got shape {arr.shape!r}]")
+            self._image_label.setPixmap(QPixmap())
+            return
+
+        self._volume = arr.astype(np.float32, copy=False)
+        # Initialize index in the middle of the axial dimension
+        z_dim = self._volume.shape[0]
+        self._index = z_dim // 2
+
+        # Enable all navigation controls; _reset_slider_for_plane will decide which slider is visible.
+        self._slider.setEnabled(True)
+        self._bottom_slider.setEnabled(True)
+        self._prev_btn.setEnabled(True)
+        self._next_btn.setEnabled(True)
+        self._reset_slider_for_plane()
+        self._update_image()
+
+    # ---- Navigation / plane ----
+    def _on_plane_changed(self, label: str) -> None:
+        self._plane = label.lower()
+        self._reset_slider_for_plane()
+        self._update_image()
+
+    def _reset_slider_for_plane(self) -> None:
+        if self._volume is None:
+            return
+        if self._volume.ndim == 4:
+            z_dim, y_dim, x_dim, _ = self._volume.shape
+        else:
+            z_dim, y_dim, x_dim = self._volume.shape
+        if self._plane == "axial":
+            min_idx, max_idx = 0, max(0, z_dim - 1)
+        elif self._plane == "coronal":
+            min_idx, max_idx = 0, max(0, y_dim - 1)
+        else:  # sagittal
+            min_idx, max_idx = 0, max(0, x_dim - 1)
+
+        # Clamp current index into the valid range.
+        self._index = max(min_idx, min(self._index, max_idx))
+
+        use_vertical = self._plane in ("axial", "coronal")
+        self._slider.setVisible(use_vertical)
+        self._prev_btn.setVisible(use_vertical)
+        self._next_btn.setVisible(use_vertical)
+
+        self._bottom_slider.setVisible(not use_vertical)
+        self._bottom_prev_btn.setVisible(not use_vertical)
+        self._bottom_next_btn.setVisible(not use_vertical)
+
+        self._bottom_prev_btn.setEnabled(not use_vertical and self._volume is not None)
+        self._bottom_next_btn.setEnabled(not use_vertical and self._volume is not None)
+
+        # Update ranges for both sliders.
+        self._slider.blockSignals(True)
+        # For axial: top = head (first slice), bottom = feet (last slice)
+        self._slider.setInvertedAppearance(self._plane == "axial")
+        self._slider.setMinimum(min_idx)
+        self._slider.setMaximum(max_idx)
+        self._slider.blockSignals(False)
+
+        self._bottom_slider.blockSignals(True)
+        self._bottom_slider.setMinimum(min_idx)
+        self._bottom_slider.setMaximum(max_idx)
+        self._bottom_slider.blockSignals(False)
+
+        # Set the active slider's value.
+        if use_vertical:
+            self._slider.setValue(self._index)
+        else:
+            self._bottom_slider.setValue(self._index)
+
+        self._update_slice_location()
+
+    def _update_slice_location(self) -> None:
+        """Update the slice location outline widget to match current plane and index."""
+        if self._volume is None:
+            return
+        if self._volume.ndim == 4:
+            z_dim, y_dim, x_dim, _ = self._volume.shape
+        else:
+            z_dim, y_dim, x_dim = self._volume.shape
+        if self._plane == "axial":
+            min_idx, max_idx = 0, max(0, z_dim - 1)
+        elif self._plane == "coronal":
+            min_idx, max_idx = 0, max(0, y_dim - 1)
+        else:
+            min_idx, max_idx = 0, max(0, x_dim - 1)
+        self._slice_location.set_plane(self._plane)
+        self._slice_location.set_range(min_idx, max_idx)
+        self._slice_location.set_value(self._index)
+
+    def _on_slider_changed(self, value: int) -> None:
+        self._index = int(value)
+        self._slice_location.set_value(self._index)
+        self._update_image()
+
+    def _on_bottom_slider_changed(self, value: int) -> None:
+        self._index = int(value)
+        self._slice_location.set_value(self._index)
+        self._update_image()
+
+    def _step_prev(self) -> None:
+        if self._volume is None:
+            return
+        if self._index <= self._slider.minimum():
+            return
+        self._index -= 1
+        self._slider.setValue(self._index)
+
+    def _step_next(self) -> None:
+        if self._volume is None:
+            return
+        if self._index >= self._slider.maximum():
+            return
+        self._index += 1
+        self._slider.setValue(self._index)
+
+    # ---- Rendering ----
+    def _current_slice_array(self) -> np.ndarray | None:
+        if self._volume is None:
+            return None
+        if self._volume.ndim == 4:
+            z_dim, y_dim, x_dim, _ = self._volume.shape
+        else:
+            z_dim, y_dim, x_dim = self._volume.shape
+        idx = int(max(self._slider.minimum(), min(self._index, self._slider.maximum())))
+
+        if self._plane == "axial":
+            # (Y, X) or (Y, X, 3)
+            sl = self._volume[idx, ...]
+            # Rotate 180° in-plane
+            sl = np.rot90(sl, 2, axes=(0, 1))
+            return sl
+
+        if self._plane == "coronal":
+            # (Z, X) or (Z, X, 3)
+            sl = self._volume[:, idx, ...]
+            # No additional rotation; show as-sliced (after cropping).
+            return sl
+
+        # Sagittal
+        sl = self._volume[:, :, idx, ...] if self._volume.ndim == 4 else self._volume[:, :, idx]
+        # No additional rotation; show as-sliced (after cropping).
+        return sl
+
+    def _update_image(self) -> None:
+        sl = self._current_slice_array()
+        if sl is None:
+            self._image_label.setText("[No volume loaded]")
+            self._image_label.setPixmap(QPixmap())
+            self._index_label.setText("Slice: – / –")
+            return
+
+        # Normalize to [0, 255] uint8 for display
+        sl = np.nan_to_num(sl, nan=0.0, posinf=0.0, neginf=0.0)
+        if sl.ndim == 2:
+            vmin = float(sl.min())
+            vmax = float(sl.max())
+        else:
+            vmin = float(sl.min())
+            vmax = float(sl.max())
+        if vmax > vmin:
+            sl_norm = (sl - vmin) / (vmax - vmin)
+        else:
+            sl_norm = np.zeros_like(sl, dtype=np.float32)
+        img8 = (sl_norm * 255.0).clip(0, 255).astype(np.uint8)
+        if img8.ndim == 2:
+            h, w = img8.shape
+            rgb = np.stack([img8, img8, img8], axis=-1)
+        else:
+            h, w, _ = img8.shape
+            rgb = img8
+        rgb = np.ascontiguousarray(rgb)
+
+        qimg = QImage(
+            rgb.data,
+            w,
+            h,
+            3 * w,
+            QImage.Format.Format_RGB888,
+        )
+        pix = QPixmap.fromImage(qimg)
+        self._image_label.set_full_pixmap(pix)
+        target_h = self._image_label.height() or 300
+        self._image_label.setPixmap(
+            pix.scaledToHeight(
+                target_h,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+        max_idx = self._slider.maximum()
+        self._index_label.setText(
+            f"{self._plane.capitalize()} slice: {self._index + 1} / {max_idx + 1}"
+        )
+
 class DefinitionDialog(QDialog):
     """
     Shown before the query window. Displays the definition (and examples for vertical).
@@ -620,7 +1129,8 @@ class DefinitionDialog(QDialog):
     def __init__(self, axis: str = AXIS_VERTICAL) -> None:
         super().__init__()
         self.setWindowTitle("Instructions — Poset Construction")
-        self.resize(560, 600)
+        # Match the size of the axis-specific definition windows for consistency.
+        self.resize(820, 520)
         self.setModal(True)
         self._axis = axis
         self.setStyleSheet("background-color: #ffffff;")
@@ -652,8 +1162,8 @@ class DefinitionDialog(QDialog):
         anatomy_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         anatomy_img.setFixedHeight(400)
         
-        # Use ASSETS_DIR from config instead of relative path
-        anatomy_path = ASSETS_DIR / "definition_images" / "Anatomy_axes.png"
+        # Use updated example figure for anatomical axes.
+        anatomy_path = ASSETS_DIR / "definition_images" / "Axes_example.png"
         
         if anatomy_path.exists():
             anatomy_pix = QPixmap(str(anatomy_path))
@@ -845,8 +1355,8 @@ class VerticalDefinitionDialog(QDialog):
         com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         com_img.setFixedHeight(2 * img_height)
         com_img.setStyleSheet(img_style)
-        # Labeled image for vertical CoM
-        com_path = _img_dir / "CoM_vert_axis.png"
+        # Updated labeled image for vertical CoM
+        com_path = _img_dir / "Vertical_CoM_numbers.png"
         if com_path.exists():
             pix = QPixmap(str(com_path))
             if not pix.isNull():
@@ -1040,8 +1550,8 @@ class MediolateralDefinitionDialog(QDialog):
         com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         com_img.setFixedHeight(2 * img_height)
         com_img.setStyleSheet(img_style)
-        # Labeled image for lateral CoM
-        com_path = _img_dir / "CoM_lat_axis.png"
+        # Updated labeled image for lateral CoM
+        com_path = _img_dir / "Lateral_CoM_numbers.png"
         if com_path.exists():
             pix = QPixmap(str(com_path))
             if not pix.isNull():
@@ -1224,8 +1734,8 @@ class AnteroposteriorDefinitionDialog(QDialog):
         com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         com_img.setFixedHeight(2 * img_height)
         com_img.setStyleSheet(img_style)
-        # Labeled image for anteroposterior CoM
-        com_path = _img_dir / "CoM_AP_axis.png"
+        # Updated labeled image for anteroposterior CoM
+        com_path = _img_dir / "AP_CoM_numbers.png"
         if com_path.exists():
             pix = QPixmap(str(com_path))
             if not pix.isNull():
@@ -1492,19 +2002,26 @@ class QueryDialog(QDialog):
         # Give the anatomy panel a tall left column with the front/side/rear views.
         main_layout.addWidget(anatomy_group, stretch=1)
 
-        # Coronal slices viewer to support answering questions using slice stacks
-        coronal_group = QGroupBox("Coronal slices")
+        # Imaging support: full-body volume viewer (coronal slice stacks are kept in code but hidden by default)
+        coronal_group = QGroupBox("Full-body volume")
         coronal_group.setStyleSheet(
             "QGroupBox { font-weight: 600; font-size: 13px; }"
         )
         coronal_layout = QVBoxLayout(coronal_group)
-        coronal_panel = CoronalSlicesPanel(self)
-        coronal_layout.addWidget(coronal_panel)
 
-        # Data source note for the coronal slice viewer
+        # NOTE: CoronalSlicesPanel remains available in code but is not added to the UI by default.
+        # If needed in the future, it can be re-added here alongside the volume panel.
+        # coronal_panel = CoronalSlicesPanel(self)
+        # coronal_layout.addWidget(coronal_panel)
+
+        # Full-body volume viewer (NumPy tensor)
+        volume_panel = FullBodyVolumePanel(self)
+        coronal_layout.addWidget(volume_panel)
+
+        # Data source note for the volume viewer
         vh_source = QLabel(
             '<a href="https://data.lhncbc.nlm.nih.gov/public/Visible-Human/Male-Images/PNG_format/index.html">'
-            "Source: Visible Human Male coronal slices (NLM)</a>",
+            "Source: Visible Human Male full-body volume (NLM)</a>",
             self,
         )
         vh_source.setOpenExternalLinks(True)

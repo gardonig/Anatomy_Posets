@@ -329,7 +329,8 @@ class MainWindow(QMainWindow):
             save_callback=self._on_poset_autosave,
         )
         query_dialog.finished.connect(lambda: self.start_btn.setEnabled(True))
-        query_dialog.show()
+        # Open the query window maximized to make best use of the display
+        query_dialog.showMaximized()
 
     def _open_viewer(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

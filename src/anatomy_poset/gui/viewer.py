@@ -1,7 +1,11 @@
 from typing import Dict, List, Set, Tuple
 import math
+
+import numpy as np
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsScene,
@@ -743,10 +747,11 @@ class StructureViewsWindow(QWidget):
 
             self._tabs.addTab(tab, structure_name)
 
-        # Coronal slice viewer entry point
+        # Slice/volume viewer entry points
         bottom_row = QHBoxLayout()
         root.addLayout(bottom_row)
         bottom_row.addStretch(1)
+
         open_coronal_btn = QPushButton("Open coronal slice viewer…")
         open_coronal_btn.setToolTip(
             "Browse coronal image stacks (e.g. Visible Human) with a slider and arrow keys."
@@ -758,4 +763,326 @@ class StructureViewsWindow(QWidget):
 
         open_coronal_btn.clicked.connect(_open_coronal_viewer)
         bottom_row.addWidget(open_coronal_btn)
+
+        open_volume_btn = QPushButton("Open full-body volume viewer…")
+        open_volume_btn.setToolTip(
+            "Browse the downsampled full-body volume from a NumPy tensor with axial/coronal/sagittal views."
+        )
+
+        def _open_volume_viewer() -> None:
+            viewer = FullBodyVolumeViewer(self)
+            viewer.show()
+
+        open_volume_btn.clicked.connect(_open_volume_viewer)
+        bottom_row.addWidget(open_volume_btn)
+
         bottom_row.addStretch(1)
+
+
+class FullBodyVolumeViewer(QWidget):
+    """
+    Viewer for the downsampled full-body volume stored as a NumPy tensor.
+    Lets the user pick a .npy file and browse axial / coronal / sagittal slices with a slider.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Full-body Slice Viewer")
+        self.resize(900, 720)
+
+        self._volume: np.ndarray | None = None  # shape (Z, Y, X), float32 [0, 1]
+        self._plane: str = "axial"  # axial / coronal / sagittal
+        self._index: int = 0
+
+        root = QVBoxLayout(self)
+
+        # Top row: choose tensor file + plane selector
+        top_row = QHBoxLayout()
+        root.addLayout(top_row)
+
+        self._load_btn = QPushButton("Choose volume (.npy)…")
+        self._load_btn.setToolTip(
+            "Select a NumPy tensor file containing the full-body volume "
+            "(e.g. full_body_tensor.npy)."
+        )
+        self._load_btn.clicked.connect(self._select_tensor_file)
+        top_row.addWidget(self._load_btn)
+
+        top_row.addStretch(1)
+
+        self._plane_buttons: Dict[str, QPushButton] = {}
+        plane_row = QHBoxLayout()
+        top_row.addLayout(plane_row)
+
+        def _make_plane_button(label: str, key: str) -> QPushButton:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(
+                """
+                QPushButton {
+                    padding: 4px 12px;
+                    border-radius: 4px;
+                    border: 1px solid #c0c0c5;
+                    background: #f2f2f7;
+                    color: #1a1a1a;
+                }
+                QPushButton:hover {
+                    background: #e0e0ea;
+                }
+                QPushButton:checked {
+                    background: #007aff;
+                    color: white;
+                    border-color: #0051d5;
+                }
+                """
+            )
+
+            def on_clicked(checked: bool, k: str = key) -> None:  # type: ignore[override]
+                if not checked:
+                    # keep one plane active; ignore unchecking
+                    btn.setChecked(True)
+                    return
+                for other_key, other_btn in self._plane_buttons.items():
+                    if other_key != k:
+                        other_btn.setChecked(False)
+                self._plane = k
+                self._reset_slider_for_plane()
+                self._update_image()
+
+            btn.clicked.connect(on_clicked)
+            return btn
+
+        for label, key in (("Axial", "axial"), ("Coronal", "coronal"), ("Sagittal", "sagittal")):
+            b = _make_plane_button(label, key)
+            self._plane_buttons[key] = b
+            plane_row.addWidget(b)
+
+        # Default plane
+        self._plane_buttons["axial"].setChecked(True)
+
+        # Image area
+        self._image_label = ClickableImageLabel("Full-body slice — full view", parent=self)
+        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image_label.setStyleSheet(
+            "border: 1px solid #e0e0e0; border-radius: 8px; "
+            "background: #000000; padding: 4px; margin: 8px;"
+        )
+        self._image_label.setMinimumHeight(540)
+        root.addWidget(self._image_label, stretch=1)
+
+        # Navigation controls
+        nav_row = QHBoxLayout()
+        root.addLayout(nav_row)
+
+        self._prev_btn = QPushButton("◀")
+        self._prev_btn.setFixedWidth(40)
+        self._prev_btn.clicked.connect(self._step_prev)
+        self._prev_btn.setEnabled(False)
+        nav_row.addWidget(self._prev_btn)
+
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setMinimum(0)
+        self._slider.setMaximum(0)
+        self._slider.setSingleStep(1)
+        self._slider.setPageStep(10)
+        self._slider.setEnabled(False)
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        nav_row.addWidget(self._slider, stretch=1)
+
+        self._next_btn = QPushButton("▶")
+        self._next_btn.setFixedWidth(40)
+        self._next_btn.clicked.connect(self._step_next)
+        self._next_btn.setEnabled(False)
+        nav_row.addWidget(self._next_btn)
+
+        self._index_label = QLabel("Slice: – / –")
+        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        nav_row.addWidget(self._index_label)
+
+        # Try to auto-load a default tensor near the repository root or assets dir.
+        self._try_auto_load_tensor()
+
+    # ---- Tensor loading ----
+    def _select_tensor_file(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select NumPy volume file",
+            str(Path.cwd()),
+            "NumPy files (*.npy *.npz);;All files (*)",
+        )
+        if not path:
+            return
+        self._load_tensor(Path(path))
+
+    def _try_auto_load_tensor(self) -> None:
+        candidates = []
+        # 1) assets directory (prefer RGB tensor, fall back to grayscale)
+        candidates.append(ASSETS_DIR / "full_body_tensor_rgb.npy")
+        candidates.append(ASSETS_DIR / "full_body_tensor.npy")
+        # 2) repository root (three levels above this file)
+        try:
+            repo_root = Path(__file__).resolve().parents[3]
+            candidates.append(repo_root / "full_body_tensor_rgb.npy")
+            candidates.append(repo_root / "full_body_tensor.npy")
+        except Exception:
+            pass
+
+        for p in candidates:
+            if p.exists():
+                self._load_tensor(p)
+                return
+
+        self._image_label.setText(
+            "Full-body volume viewer\n\n"
+            "Click 'Choose volume (.npy)…' to load a NumPy tensor created from the "
+            "downsampled full-body slices."
+        )
+
+    def _load_tensor(self, path: Path) -> None:
+        try:
+            arr = np.load(str(path))
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(
+                self,
+                "Failed to load volume",
+                f"Could not load NumPy array from:\n{path}\n\n{exc}",
+            )
+            return
+
+        if arr.ndim not in (3, 4):
+            QMessageBox.warning(
+                self,
+                "Invalid volume",
+                f"Expected a 3D or 4D RGB array, got shape {arr.shape!r}.",
+            )
+            return
+
+        self._volume = arr.astype(np.float32, copy=False)
+        z_dim = self._volume.shape[0]
+        self._index = z_dim // 2
+
+        self._slider.setEnabled(True)
+        self._prev_btn.setEnabled(True)
+        self._next_btn.setEnabled(True)
+        self._reset_slider_for_plane()
+        self._update_image()
+
+    # ---- Navigation ----
+    def _reset_slider_for_plane(self) -> None:
+        if self._volume is None:
+            return
+        if self._volume.ndim == 4:
+            z_dim, y_dim, x_dim, _ = self._volume.shape
+        else:
+            z_dim, y_dim, x_dim = self._volume.shape
+        if self._plane == "axial":
+            min_idx, max_idx = 0, max(0, z_dim - 1)
+        elif self._plane == "coronal":
+            min_idx, max_idx = 0, max(0, y_dim - 1)
+        else:  # sagittal
+            min_idx, max_idx = 0, max(0, x_dim - 1)
+
+        self._index = max(min_idx, min(self._index, max_idx))
+
+        self._slider.blockSignals(True)
+        self._slider.setMinimum(min_idx)
+        self._slider.setMaximum(max_idx)
+        self._slider.setValue(self._index)
+        self._slider.blockSignals(False)
+
+    def _on_slider_changed(self, value: int) -> None:
+        self._index = int(value)
+        self._update_image()
+
+    def _step_prev(self) -> None:
+        if self._volume is None:
+            return
+        if self._index <= self._slider.minimum():
+            return
+        self._index -= 1
+        self._slider.setValue(self._index)
+
+    def _step_next(self) -> None:
+        if self._volume is None:
+            return
+        if self._index >= self._slider.maximum():
+            return
+        self._index += 1
+        self._slider.setValue(self._index)
+
+    # ---- Rendering ----
+    def _current_slice_array(self) -> np.ndarray | None:
+        if self._volume is None:
+            return None
+        if self._volume.ndim == 4:
+            z_dim, y_dim, x_dim, _ = self._volume.shape
+        else:
+            z_dim, y_dim, x_dim = self._volume.shape
+        idx = int(max(self._slider.minimum(), min(self._index, self._slider.maximum())))
+
+        if self._plane == "axial":
+            # (Y, X) or (Y, X, 3)
+            sl = self._volume[idx, ...]
+            # Rotate 180° in-plane
+            sl = np.rot90(sl, 2, axes=(0, 1))
+            return sl
+
+        if self._plane == "coronal":
+            # (Z, X) or (Z, X, 3)
+            sl = self._volume[:, idx, ...]
+            # No additional rotation; show as-sliced (after cropping).
+            return sl
+
+        # Sagittal
+        sl = self._volume[:, :, idx, ...] if self._volume.ndim == 4 else self._volume[:, :, idx]
+        # No additional rotation; show as-sliced (after cropping).
+        return sl
+
+    def _update_image(self) -> None:
+        sl = self._current_slice_array()
+        if sl is None:
+            self._image_label.setText("[No volume loaded]")
+            self._image_label.setPixmap(QPixmap())
+            self._index_label.setText("Slice: – / –")
+            return
+
+        # Normalize to [0, 255] uint8 for display
+        sl = np.nan_to_num(sl, nan=0.0, posinf=0.0, neginf=0.0)
+        vmin = float(sl.min())
+        vmax = float(sl.max())
+        if vmax > vmin:
+            sl_norm = (sl - vmin) / (vmax - vmin)
+        else:
+            sl_norm = np.zeros_like(sl, dtype=np.float32)
+        img8 = (sl_norm * 255.0).clip(0, 255).astype(np.uint8)
+        if img8.ndim == 2:
+            h, w = img8.shape
+            rgb = np.stack([img8, img8, img8], axis=-1)
+        else:
+            h, w, _ = img8.shape
+            rgb = img8
+        rgb = np.ascontiguousarray(rgb)
+
+        qimg = QImage(
+            rgb.data,
+            w,
+            h,
+            3 * w,
+            QImage.Format.Format_RGB888,
+        )
+        pix = QPixmap.fromImage(qimg)
+        self._image_label.set_full_pixmap(pix)
+        target_h = self._image_label.height() or 540
+        self._image_label.setPixmap(
+            pix.scaledToHeight(
+                target_h,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+        max_idx = self._slider.maximum()
+        self._index_label.setText(
+            f"{self._plane.capitalize()} slice: {self._index + 1} / {max_idx + 1}"
+        )
