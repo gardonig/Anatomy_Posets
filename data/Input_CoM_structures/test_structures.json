@@ -1,11 +1,11 @@
 {
   "structures": [
-    {"name": "Skull", "com_vertical": 90, "com_lateral": 0},
-    {"name": "Spine", "com_vertical": 70, "com_lateral": 0},
-    {"name": "Left Ribs", "com_vertical": 55, "com_lateral": -6},
-    {"name": "Right Ribs", "com_vertical": 55, "com_lateral": 6},
-    {"name": "Pelvis", "com_vertical": 40, "com_lateral": 0},
-    {"name": "Left femur", "com_vertical": 25, "com_lateral": -15},
-    {"name": "Right femur", "com_vertical": 25, "com_lateral": 15}
+    {"name": "Skull", "com_vertical": 90, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Spine", "com_vertical": 70, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Left Ribs", "com_vertical": 55, "com_lateral": -6, "com_anteroposterior": 0},
+    {"name": "Right Ribs", "com_vertical": 55, "com_lateral": 6, "com_anteroposterior": 0},
+    {"name": "Pelvis", "com_vertical": 40, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Left femur", "com_vertical": 25, "com_lateral": -15, "com_anteroposterior": 0},
+    {"name": "Right femur", "com_vertical": 25, "com_lateral": 15, "com_anteroposterior": 0}
   ]
 }

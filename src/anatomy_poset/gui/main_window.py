@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QFileDialog,
     QDialog,
@@ -28,7 +29,7 @@ from ..core.models import (
 )
 from .dialogs import (
     AnteroposteriorDefinitionDialog,
-    DefinitionDialog,
+    InstructionsDialog,
     MediolateralDefinitionDialog,
     QueryDialog,
     VerticalDefinitionDialog,
@@ -40,6 +41,7 @@ class MainWindow(QMainWindow):
     def __init__(self, input_path: Optional[str] = None) -> None:
         super().__init__()
         self.setWindowTitle("Anatomical Poset Builder")
+        # Initial size; will be clamped to screen geometry below.
         self.resize(520, 500)
 
         # Remember optional input path for use during UI setup
@@ -54,6 +56,15 @@ class MainWindow(QMainWindow):
         self._edges_anteroposterior: Set[Tuple[int, int]] = set()
 
         self._init_ui()
+
+        # Never exceed available screen size.
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            w = min(self.width(), geom.width())
+            h = min(self.height(), geom.height())
+            self.resize(w, h)
+            self.setMaximumSize(geom.width(), geom.height())
 
     def _init_ui(self) -> None:
         central = QWidget()
@@ -90,17 +101,17 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(btn_row)
 
         # Axis choice: run vertical, lateral, or anteroposterior poset construction
-        axis_group = QGroupBox("Axis for this run:")
+        axis_group = QGroupBox("Axis for This Run:")
         axis_layout = QVBoxLayout(axis_group)
         self.axis_vertical_rb = QRadioButton(
-            'Vertical (top–bottom, superior–inferior) — "strictly above"'
+            'Vertical Axis'
         )
         self.axis_vertical_rb.setChecked(True)
         self.axis_frontal_rb = QRadioButton(
-            'Lateral (right–left, patient\'s view) — "strictly to the left of"'
+            'Lateral Axis'
         )
         self.axis_ap_rb = QRadioButton(
-            'Anteroposterior (front–back) — "strictly in front of"'
+            'Anteroposterior Axis'
         )
         axis_layout.addWidget(self.axis_vertical_rb)
         axis_layout.addWidget(self.axis_frontal_rb)
@@ -130,10 +141,11 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
 
-        # Load structures from file: CLI arg, or default test_structures.json
+        # Load structures from file: CLI arg, or default to the latest CoM set
         load_path = self._input_path
         if load_path is None:
-            default_file = INPUT_DIR / "test_structures.json"
+            # Prefer the newer CoM structures file if present.
+            default_file = INPUT_DIR / ".json"
             if default_file.exists():
                 load_path = str(default_file)
         if load_path is not None:
@@ -305,7 +317,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(False)
 
         # 1) Generic welcome/instructions window (always shown)
-        welcome_dialog = DefinitionDialog(axis=axis)
+        welcome_dialog = InstructionsDialog(axis=axis)
         if welcome_dialog.exec() != QDialog.DialogCode.Accepted:
             self.start_btn.setEnabled(True)
             return

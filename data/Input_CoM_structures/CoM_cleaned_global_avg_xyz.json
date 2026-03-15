@@ -1,0 +1,340 @@
+{
+  "structures": [
+    {
+      "name": "adrenal_gland_left",
+      "com_vertical": 328.5736385024712,
+      "com_lateral": 145.6267814152733,
+      "com_anteroposterior": 82.44084380947848
+    },
+    {
+      "name": "adrenal_gland_right",
+      "com_vertical": 331.17819999375223,
+      "com_lateral": 113.20779738275658,
+      "com_anteroposterior": 77.2329481043652
+    },
+    {
+      "name": "aorta",
+      "com_vertical": 342.6868036035757,
+      "com_lateral": 135.74262586818452,
+      "com_anteroposterior": 82.62507763125791
+    },
+    {
+      "name": "autochthon_left",
+      "com_vertical": 321.5452472829752,
+      "com_lateral": 145.4312288861978,
+      "com_anteroposterior": 55.78004670560517
+    },
+    {
+      "name": "autochthon_right",
+      "com_vertical": 322.1993749730189,
+      "com_lateral": 110.76635454448869,
+      "com_anteroposterior": 56.03599098727051
+    },
+    {
+      "name": "brain",
+      "com_vertical": 440.3770995782126,
+      "com_lateral": 124.63585559800467,
+      "com_anteroposterior": 68.90887619931028
+    },
+    {
+      "name": "colon",
+      "com_vertical": 306.84469787796314,
+      "com_lateral": 129.2691951110229,
+      "com_anteroposterior": 91.09512568040945
+    },
+    {
+      "name": "duodenum",
+      "com_vertical": 319.2207448071285,
+      "com_lateral": 110.99521907406147,
+      "com_anteroposterior": 90.55551757780289
+    },
+    {
+      "name": "esophagus",
+      "com_vertical": 358.5137378384595,
+      "com_lateral": 132.95330794518145,
+      "com_anteroposterior": 78.81788124539186
+    },
+    {
+      "name": "femur_left",
+      "com_vertical": 195.3985587750196,
+      "com_lateral": 185.0091746758403,
+      "com_anteroposterior": 90.56692710084866
+    },
+    {
+      "name": "femur_right",
+      "com_vertical": 196.28152777717398,
+      "com_lateral": 70.13611816687158,
+      "com_anteroposterior": 91.06640951098011
+    },
+    {
+      "name": "fibula",
+      "com_vertical": 105.01714782427865,
+      "com_lateral": 111.47911200475451,
+      "com_anteroposterior": 80.39021993166365
+    },
+    {
+      "name": "gallbladder",
+      "com_vertical": 325.38517685228624,
+      "com_lateral": 91.11868848842349,
+      "com_anteroposterior": 103.9499101016474
+    },
+    {
+      "name": "gluteus_maximus_left",
+      "com_vertical": 266.0173554481233,
+      "com_lateral": 177.98909586170907,
+      "com_anteroposterior": 59.6283205489144
+    },
+    {
+      "name": "gluteus_maximus_right",
+      "com_vertical": 266.46573925156,
+      "com_lateral": 75.83083458638723,
+      "com_anteroposterior": 59.93492942064042
+    },
+    {
+      "name": "gluteus_medius_left",
+      "com_vertical": 281.8866013457182,
+      "com_lateral": 187.99443353311074,
+      "com_anteroposterior": 79.14513626780689
+    },
+    {
+      "name": "gluteus_medius_right",
+      "com_vertical": 282.42780692979596,
+      "com_lateral": 66.25084520641707,
+      "com_anteroposterior": 79.45775870447999
+    },
+    {
+      "name": "gluteus_minimus_left",
+      "com_vertical": 278.1705057881128,
+      "com_lateral": 184.74321305016184,
+      "com_anteroposterior": 87.97393606934428
+    },
+    {
+      "name": "gluteus_minimus_right",
+      "com_vertical": 278.26462831560707,
+      "com_lateral": 70.23936196505379,
+      "com_anteroposterior": 87.46529035115407
+    },
+    {
+      "name": "heart",
+      "com_vertical": 351.75846996170344,
+      "com_lateral": 142.7066515780869,
+      "com_anteroposterior": 96.08022549591958
+    },
+    {
+      "name": "hip_left",
+      "com_vertical": 277.6375581187893,
+      "com_lateral": 164.8729853708961,
+      "com_anteroposterior": 79.23826041699557
+    },
+    {
+      "name": "hip_right",
+      "com_vertical": 278.2653324009457,
+      "com_lateral": 89.19804752776336,
+      "com_anteroposterior": 79.31278362135532
+    },
+    {
+      "name": "humerus_left",
+      "com_vertical": 378.1257872338587,
+      "com_lateral": 221.73654499992938,
+      "com_anteroposterior": 82.41158116193418
+    },
+    {
+      "name": "humerus_right",
+      "com_vertical": 374.9604600355168,
+      "com_lateral": 35.15105444722575,
+      "com_anteroposterior": 82.37692822376064
+    },
+    {
+      "name": "iliac_artery_left",
+      "com_vertical": 284.6842668112624,
+      "com_lateral": 147.62612022595025,
+      "com_anteroposterior": 95.68413516648101
+    },
+    {
+      "name": "iliac_artery_right",
+      "com_vertical": 286.1984593167875,
+      "com_lateral": 111.30762882249962,
+      "com_anteroposterior": 96.21695960404556
+    },
+    {
+      "name": "iliac_vena_left",
+      "com_vertical": 280.8377849837552,
+      "com_lateral": 147.94823381659552,
+      "com_anteroposterior": 91.17523772503944
+    },
+    {
+      "name": "iliac_vena_right",
+      "com_vertical": 281.944774059556,
+      "com_lateral": 107.61758349742456,
+      "com_anteroposterior": 93.10172546841886
+    },
+    {
+      "name": "iliopsoas_left",
+      "com_vertical": 289.70551511251324,
+      "com_lateral": 160.73096899440748,
+      "com_anteroposterior": 87.35348437704137
+    },
+    {
+      "name": "iliopsoas_right",
+      "com_vertical": 289.13053898200286,
+      "com_lateral": 93.71728022717248,
+      "com_anteroposterior": 87.50477973321567
+    },
+    {
+      "name": "inferior_vena_cava",
+      "com_vertical": 319.76550633675305,
+      "com_lateral": 117.4775088328907,
+      "com_anteroposterior": 87.96628478829346
+    },
+    {
+      "name": "intervertebral_discs",
+      "com_vertical": 330.0464537392038,
+      "com_lateral": 127.95419000154716,
+      "com_anteroposterior": 76.67193984742589
+    },
+    {
+      "name": "kidney_left",
+      "com_vertical": 323.49529395097574,
+      "com_lateral": 161.2107938536867,
+      "com_anteroposterior": 69.38356393678654
+    },
+    {
+      "name": "kidney_right",
+      "com_vertical": 321.3738979535789,
+      "com_lateral": 94.97886700850029,
+      "com_anteroposterior": 72.44924899524041
+    },
+    {
+      "name": "liver",
+      "com_vertical": 334.21941704207,
+      "com_lateral": 91.02938501859862,
+      "com_anteroposterior": 86.73850564288641
+    },
+    {
+      "name": "lung_left",
+      "com_vertical": 361.6910515764725,
+      "com_lateral": 164.59120272435848,
+      "com_anteroposterior": 76.33917428080588
+    },
+    {
+      "name": "lung_right",
+      "com_vertical": 360.7173199039915,
+      "com_lateral": 95.6490726032888,
+      "com_anteroposterior": 79.66060479989557
+    },
+    {
+      "name": "pancreas",
+      "com_vertical": 329.7516260147834,
+      "com_lateral": 148.4909081222718,
+      "com_anteroposterior": 90.29678274489912
+    },
+    {
+      "name": "portal_vein_and_splenic_vein",
+      "com_vertical": 328.8329504960325,
+      "com_lateral": 128.3507036166437,
+      "com_anteroposterior": 92.19873196581376
+    },
+    {
+      "name": "prostate",
+      "com_vertical": 264.92392813808453,
+      "com_lateral": 125.54149923182916,
+      "com_anteroposterior": 83.28887640369703
+    },
+    {
+      "name": "quadriceps_femoris_left",
+      "com_vertical": 218.99313922906185,
+      "com_lateral": 190.0302625274645,
+      "com_anteroposterior": 95.68707325855576
+    },
+    {
+      "name": "quadriceps_femoris_right",
+      "com_vertical": 218.7008445861048,
+      "com_lateral": 65.25209405444114,
+      "com_anteroposterior": 95.88217047274154
+    },
+    {
+      "name": "sacrum",
+      "com_vertical": 285.03979976731404,
+      "com_lateral": 127.15159358179135,
+      "com_anteroposterior": 65.0601753873748
+    },
+    {
+      "name": "sartorius_left",
+      "com_vertical": 218.24324395691195,
+      "com_lateral": 164.4560556744892,
+      "com_anteroposterior": 95.34291124119284
+    },
+    {
+      "name": "sartorius_right",
+      "com_vertical": 220.7109925739706,
+      "com_lateral": 90.22600530117366,
+      "com_anteroposterior": 96.60307262724614
+    },
+    {
+      "name": "small_bowel",
+      "com_vertical": 302.35640238821844,
+      "com_lateral": 145.80287541730638,
+      "com_anteroposterior": 96.84962694361018
+    },
+    {
+      "name": "spinal_cord",
+      "com_vertical": 351.99448796183924,
+      "com_lateral": 128.43842299630688,
+      "com_anteroposterior": 70.50612399405053
+    },
+    {
+      "name": "spleen",
+      "com_vertical": 337.45182486087344,
+      "com_lateral": 175.34640227076,
+      "com_anteroposterior": 70.20774865642456
+    },
+    {
+      "name": "stomach",
+      "com_vertical": 336.1007955351386,
+      "com_lateral": 156.85536184983386,
+      "com_anteroposterior": 90.83238533955974
+    },
+    {
+      "name": "thigh_medial_compartment_left",
+      "com_vertical": 235.37937944731564,
+      "com_lateral": 162.73604949261295,
+      "com_anteroposterior": 81.78228633770578
+    },
+    {
+      "name": "thigh_medial_compartment_right",
+      "com_vertical": 234.4976825055016,
+      "com_lateral": 92.62444553226311,
+      "com_anteroposterior": 82.11202106557778
+    },
+    {
+      "name": "thigh_posterior_compartment_left",
+      "com_vertical": 206.05989201724114,
+      "com_lateral": 177.51666807120213,
+      "com_anteroposterior": 68.42716290711446
+    },
+    {
+      "name": "thigh_posterior_compartment_right",
+      "com_vertical": 206.5265604643873,
+      "com_lateral": 77.93272675032513,
+      "com_anteroposterior": 68.31440517812688
+    },
+    {
+      "name": "tibia",
+      "com_vertical": 117.8975759015699,
+      "com_lateral": 120.81329993871071,
+      "com_anteroposterior": 91.60409537822979
+    },
+    {
+      "name": "urinary_bladder",
+      "com_vertical": 269.56500123231166,
+      "com_lateral": 126.85650201290856,
+      "com_anteroposterior": 93.01849869276184
+    },
+    {
+      "name": "vertebrae",
+      "com_vertical": 337.03802957597793,
+      "com_lateral": 128.23308650381864,
+      "com_anteroposterior": 76.2377926137719
+    }
+  ]
+}

@@ -1,14 +1,14 @@
 {
   "structures": [
-    {"name": "Skull", "com_vertical": 95, "com_lateral": 0},
-    {"name": "Mandible", "com_vertical": 88, "com_lateral": 0},
-    {"name": "Cervical spine", "com_vertical": 78, "com_lateral": 0},
-    {"name": "Thoracic spine", "com_vertical": 62, "com_lateral": 0},
-    {"name": "Sternum", "com_vertical": 58, "com_lateral": 0},
-    {"name": "Ribs", "com_vertical": 55, "com_lateral": 0},
-    {"name": "Lumbar spine", "com_vertical": 42, "com_lateral": 0},
-    {"name": "Sacrum", "com_vertical": 28, "com_lateral": 0},
-    {"name": "Femur", "com_vertical": 18, "com_lateral": 0},
-    {"name": "Tibia", "com_vertical": 8, "com_lateral": 0}
+    {"name": "Skull", "com_vertical": 95, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Mandible", "com_vertical": 88, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Cervical spine", "com_vertical": 78, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Thoracic spine", "com_vertical": 62, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Sternum", "com_vertical": 58, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Ribs", "com_vertical": 55, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Lumbar spine", "com_vertical": 42, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Sacrum", "com_vertical": 28, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Femur", "com_vertical": 18, "com_lateral": 0, "com_anteroposterior": 0},
+    {"name": "Tibia", "com_vertical": 8, "com_lateral": 0, "com_anteroposterior": 0}
   ]
 }

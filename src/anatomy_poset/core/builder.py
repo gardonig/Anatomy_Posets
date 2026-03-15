@@ -3,6 +3,30 @@ from typing import Dict, List, Optional, Set, Tuple
 from .models import AXIS_ANTERIOR_POSTERIOR, AXIS_MEDIOLATERAL, AXIS_VERTICAL, Structure
 
 
+def _parse_bilateral_core(name: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Detect side (Left/Right) and core name for bilateral structures.
+    Handles \"Left X\", \"X left\", \"x_left\", etc. Returns (side, core) or (None, None).
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return None, None
+    norm = raw.lower().replace("_", " ").replace("-", " ")
+    tokens = [t for t in norm.split() if t]
+    side: Optional[str] = None
+    if "left" in tokens:
+        side = "Left"
+    elif "right" in tokens:
+        side = "Right"
+    if side is None:
+        return None, None
+    core_tokens = [t for t in tokens if t not in ("left", "right")]
+    if not core_tokens:
+        return side, None
+    core = " ".join(w.capitalize() for w in core_tokens)
+    return side, core
+
+
 class PosetBuilder:
     """
     Implements Algorithm 1 using the gap-based CoM strategy.
@@ -32,13 +56,8 @@ class PosetBuilder:
         if self.axis == AXIS_VERTICAL:
             side_and_core: List[Tuple[Optional[str], str]] = []
             for s in self.structures:
-                name = s.name.strip()
-                if name.startswith("Left "):
-                    side_and_core.append(("Left", name[5:].strip()))
-                elif name.startswith("Right "):
-                    side_and_core.append(("Right", name[6:].strip()))
-                else:
-                    side_and_core.append((None, name))
+                side, core = _parse_bilateral_core(s.name)
+                side_and_core.append((side, core if core else s.name.strip()))
             core_to_sides: Dict[str, Dict[str, int]] = {}
             for idx, (side, core) in enumerate(side_and_core):
                 self._core_names.append(core)

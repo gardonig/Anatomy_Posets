@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsScene,
@@ -463,6 +463,7 @@ class PosetViewerWindow(QWidget):
     def __init__(self, poset_path: str) -> None:
         super().__init__()
         self.setWindowTitle("Anatomical Poset Viewer")
+        # Initial preferred size; clamp to available screen geometry below.
         self.resize(900, 600)
 
         self._path = poset_path
@@ -476,6 +477,14 @@ class PosetViewerWindow(QWidget):
         root.addWidget(self._tabs)
 
         self._load(poset_path)
+
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geom = screen.availableGeometry()
+            w = min(self.width(), geom.width())
+            h = min(self.height(), geom.height())
+            self.resize(w, h)
+            self.setMaximumSize(geom.width(), geom.height())
 
     def _fill_tab(
         self,
@@ -918,9 +927,10 @@ class FullBodyVolumeViewer(QWidget):
 
     def _try_auto_load_tensor(self) -> None:
         candidates = []
-        # 1) assets directory (prefer RGB tensor, fall back to grayscale)
-        candidates.append(ASSETS_DIR / "full_body_tensor_rgb.npy")
-        candidates.append(ASSETS_DIR / "full_body_tensor.npy")
+        # 1) assets/visible_human_tensors (prefer RGB tensor, fall back to grayscale)
+        vh_dir = ASSETS_DIR / "visible_human_tensors"
+        candidates.append(vh_dir / "full_body_tensor_rgb.npy")
+        candidates.append(vh_dir / "full_body_tensor.npy")
         # 2) repository root (three levels above this file)
         try:
             repo_root = Path(__file__).resolve().parents[3]
