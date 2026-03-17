@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -426,241 +427,6 @@ class ClickableImageLabel(QLabel):
         # Clamp zoom to a reasonable range
         self._zoom = max(0.2, min(self._zoom, 10.0))
         self.update()
-
-
-class CoronalSlicesPanel(QWidget):
-    """
-    Embedded viewer for coronal image stacks (e.g. Visible Human PNG slices).
-    Designed to live in the right-hand side of the Query dialog.
-    """
-
-    def __init__(self, parent: QDialog | None = None) -> None:
-        super().__init__(parent)
-
-        self._base_dir: Path | None = None
-        self._stacks: Dict[str, List[Path]] = {}
-        self._current_region: str | None = None
-        self._current_index: int = 0
-
-        layout = QVBoxLayout(self)
-
-        # Top controls: choose folder + region selector
-        top_row = QHBoxLayout()
-        layout.addLayout(top_row)
-
-        self._choose_btn = QPushButton("Choose image folder…")
-        self._choose_btn.setToolTip(
-            "Select the folder that contains the subfolders with PNG slices "
-            "(e.g. head, thorax, abdomen, pelvis, thighs, legs)."
-        )
-        self._choose_btn.clicked.connect(self._select_base_folder)
-        top_row.addWidget(self._choose_btn)
-
-        top_row.addStretch(1)
-
-        self._region_combo = QComboBox()
-        self._region_combo.setEnabled(False)
-        self._region_combo.currentTextChanged.connect(self._on_region_changed)
-        top_row.addWidget(QLabel("Region:"))
-        top_row.addWidget(self._region_combo)
-
-        # Image + vertical navigation controls on the right
-        content_row = QHBoxLayout()
-        layout.addLayout(content_row)
-
-        self._image_label = ClickableImageLabel("Coronal slice — full view", parent=parent)
-        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.enable_interactive_view(True)
-        # Use a generous minimum height, but allow the label to grow/shrink
-        # with the window so users can resize freely.
-        self._image_label.setMinimumHeight(600)
-        self._image_label.setStyleSheet(
-            "border: 1px solid #e0e0e0; border-radius: 8px; "
-            "background: #000000; padding: 4px; margin-top: 4px;"
-        )
-        content_row.addWidget(self._image_label, stretch=1)
-
-        right_col = QVBoxLayout()
-        content_row.addLayout(right_col)
-
-        self._prev_btn = QPushButton("▲")
-        self._prev_btn.setFixedWidth(32)
-        self._prev_btn.clicked.connect(self._step_prev)
-        self._prev_btn.setEnabled(False)
-        right_col.addWidget(self._prev_btn)
-
-        self._slider = QSlider(Qt.Orientation.Vertical)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(0)
-        self._slider.setSingleStep(1)
-        self._slider.setPageStep(10)
-        self._slider.setInvertedAppearance(True)  # first slice at the top
-        self._slider.setEnabled(False)
-        self._slider.valueChanged.connect(self._on_slider_changed)
-        right_col.addWidget(self._slider, stretch=1)
-
-        self._next_btn = QPushButton("▼")
-        self._next_btn.setFixedWidth(32)
-        self._next_btn.clicked.connect(self._step_next)
-        self._next_btn.setEnabled(False)
-        right_col.addWidget(self._next_btn)
-
-        self._index_label = QLabel("Slice: – / –")
-        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        right_col.addWidget(self._index_label)
-
-        # Try to auto-load a default folder under assets:
-        # - Prefer assets/visible_human_male if it exists,
-        # - fall back to assets/visible_human.
-        default_base = None
-        vh_male = ASSETS_DIR / "visible_human_male"
-        vh_generic = ASSETS_DIR / "visible_human"
-        if vh_male.exists():
-            default_base = vh_male
-        elif vh_generic.exists():
-            default_base = vh_generic
-
-        if default_base is not None:
-            self._load_base_folder(default_base)
-            # If successful, we can hide the folder chooser so the user
-            # only needs the Region selector inside the GUI.
-            if self._stacks:
-                self._choose_btn.hide()
-        else:
-            # Helpful placeholder text when no default folder is available.
-            self._image_label.setText(
-                "Coronal slice viewer\n\n"
-                "Click 'Choose image folder…' and select the directory that contains\n"
-                "subfolders such as head, thorax, abdomen, pelvis, thighs, legs.\n"
-                "Then use the Region menu, slider, and arrows to browse slices."
-            )
-
-    # ---- Folder / stack handling ----
-    def _select_base_folder(self) -> None:
-        base = QFileDialog.getExistingDirectory(
-            self,
-            "Select base folder with coronal image stacks",
-            str(self._base_dir or ASSETS_DIR),
-        )
-        if not base:
-            return
-        self._load_base_folder(Path(base))
-
-    def _load_base_folder(self, base: Path) -> None:
-        if not base.exists() or not base.is_dir():
-            self._image_label.setText(
-                f"The selected folder does not exist or is not a directory:\n{base}"
-            )
-            self._image_label.setPixmap(QPixmap())
-            return
-
-        self._base_dir = base
-        self._stacks.clear()
-
-        for sub in sorted(base.iterdir()):
-            if not sub.is_dir():
-                continue
-            # Collect only PNG images (case-insensitive), ignore any .txt or other files.
-            pngs = sorted(
-                p
-                for p in sub.iterdir()
-                if p.is_file() and p.suffix.lower() == ".png"
-            )
-            if not pngs:
-                continue
-            self._stacks[sub.name] = pngs
-
-        self._region_combo.blockSignals(True)
-        self._region_combo.clear()
-        for region in sorted(self._stacks.keys()):
-            self._region_combo.addItem(region)
-        self._region_combo.blockSignals(False)
-
-        has_any = bool(self._stacks)
-        self._region_combo.setEnabled(has_any)
-        self._slider.setEnabled(has_any)
-        self._prev_btn.setEnabled(has_any)
-        self._next_btn.setEnabled(has_any)
-
-        if not has_any:
-            self._image_label.setText(
-                "No PNG image stacks were found.\n\n"
-                "The selected folder should contain subfolders (e.g. head, thorax, abdomen,\n"
-                "pelvis, thighs, legs) with .png slices inside each of them."
-            )
-            self._image_label.setPixmap(QPixmap())
-            self._index_label.setText("Slice: – / –")
-            return
-
-        first_region = self._region_combo.currentText()
-        if first_region:
-            self._on_region_changed(first_region)
-
-    # ---- Region / navigation ----
-    def _on_region_changed(self, region: str) -> None:
-        if not region or region not in self._stacks:
-            return
-        self._current_region = region
-        self._current_index = 0
-        num_slices = len(self._stacks[region])
-        self._slider.blockSignals(True)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(max(0, num_slices - 1))
-        self._slider.setValue(0)
-        self._slider.blockSignals(False)
-        self._update_image()
-
-    def _on_slider_changed(self, value: int) -> None:
-        self._current_index = int(value)
-        self._update_image()
-
-    def _step_prev(self) -> None:
-        if self._current_region is None:
-            return
-        if self._current_index <= 0:
-            return
-        self._current_index -= 1
-        self._slider.setValue(self._current_index)
-
-    def _step_next(self) -> None:
-        if self._current_region is None:
-            return
-        stack = self._stacks.get(self._current_region, [])
-        if not stack:
-            return
-        if self._current_index >= len(stack) - 1:
-            return
-        self._current_index += 1
-        self._slider.setValue(self._current_index)
-
-    def _update_image(self) -> None:
-        if self._current_region is None:
-            return
-        stack = self._stacks.get(self._current_region, [])
-        if not stack:
-            self._image_label.setText("[No slices found for this region]")
-            self._image_label.setPixmap(QPixmap())
-            self._index_label.setText("Slice: – / –")
-            return
-
-        idx = max(0, min(self._current_index, len(stack) - 1))
-        self._current_index = idx
-        path = stack[idx]
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self._image_label.setText(f"[Could not load slice: {path.name}]")
-            self._image_label.setPixmap(QPixmap())
-        else:
-            self._image_label.set_full_pixmap(pix)
-            # Keep a stable, large display size across slices.
-            target_h = self._image_label.height() or 360
-            self._image_label.setPixmap(
-                pix.scaledToHeight(
-                    target_h,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        self._index_label.setText(f"Slice: {idx + 1} / {len(stack)}")
 
 
 class SliceLocationWidget(QWidget):
@@ -1920,8 +1686,26 @@ class QueryDialog(QDialog):
 
         main_layout = QHBoxLayout(self)
 
+        # Use a horizontal splitter so the three main sections (anatomy images,
+        # questions/overview, full-body volume) can be resized by the user.
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        # Make the splitter handles thicker and visually distinct so they are easy to grab.
+        splitter.setHandleWidth(10)
+        splitter.setStyleSheet(
+            """
+            QSplitter::handle {
+                background-color: rgba(0, 0, 0, 18);  /* very subtle, almost transparent */
+            }
+            QSplitter::handle:hover {
+                background-color: rgba(0, 0, 0, 40);  /* slightly stronger on hover */
+            }
+            """
+        )
+        main_layout.addWidget(splitter)
+
         # Middle column: questions and labels overview (inserted between anatomy and coronal panels)
-        left_col = QVBoxLayout()
+        middle_widget = QWidget(self)
+        left_col = QVBoxLayout(middle_widget)
 
         # --- Questions panel (placed above overview) ---
         questions_group = QGroupBox("Questions")
@@ -2100,6 +1884,9 @@ class QueryDialog(QDialog):
 
         left_col.addWidget(overview_group)
 
+        # Add the middle column widget to the splitter
+        splitter.addWidget(middle_widget)
+
         # Right column: Anatomy Images + labels overview below
         anatomy_group = QGroupBox("Anatomy Images")
         anatomy_group.setStyleSheet(
@@ -2109,7 +1896,7 @@ class QueryDialog(QDialog):
         anatomy_layout.addWidget(_create_anatomy_views_panel(self))
 
         # Give the anatomy panel a tall left column with the front/side/rear views.
-        main_layout.addWidget(anatomy_group, stretch=1)
+        splitter.insertWidget(0, anatomy_group)
 
         # Imaging support: full-body volume viewer (coronal slice stacks are kept in code but hidden by default)
         coronal_group = QGroupBox("Full-Body Volume")
@@ -2138,10 +1925,12 @@ class QueryDialog(QDialog):
         vh_source.setStyleSheet("color: #0a66c2; font-size: 11px; margin-top: 4px;")
         coronal_layout.addWidget(vh_source)
 
-        main_layout.addWidget(coronal_group, stretch=2)
+        splitter.addWidget(coronal_group)
 
-        # Insert the question/CoM/controls column between anatomy and coronal panels
-        main_layout.insertLayout(1, left_col)
+        # Set initial relative sizes for the three panes (can be adjusted by user)
+        splitter.setStretchFactor(0, 2)  # anatomy images
+        splitter.setStretchFactor(1, 3)  # questions/overview
+        splitter.setStretchFactor(2, 3)  # full-body volume
 
         self._advance_to_next_query()
 
@@ -2212,8 +2001,8 @@ class QueryDialog(QDialog):
         # One line per structure. For vertical axis, ci/cj may already be
         # the mean of left/right when a bilateral core is combined.
         self.com_label.setText(
-            f"{name_i}: CoM {axis_label} = {ci:.1f}\n"
-            f"{name_j}: CoM {axis_label} = {cj:.1f}"
+            f"{name_i}: CoM {axis_label} = {np.round(ci, 1)}\n"
+            f"{name_j}: CoM {axis_label} = {np.round(cj, 1)}"
         )
         self._update_progress()
 
@@ -2272,8 +2061,8 @@ class QueryDialog(QDialog):
             cj = sj.com_anteroposterior
             axis_label = "anteroposterior"
         self.com_label.setText(
-            f"{name_i}: CoM {axis_label} = {ci:.1f}\n"
-            f"{name_j}: CoM {axis_label} = {cj:.1f}"
+            f"{name_i}: CoM {axis_label} = {np.round(ci, 1)}\n"
+            f"{name_j}: CoM {axis_label} = {np.round(cj, 1)}"
         )
         self.yes_btn.setEnabled(True)
         self.no_btn.setEnabled(True)

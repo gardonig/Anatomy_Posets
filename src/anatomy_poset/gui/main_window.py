@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from ..core.builder import PosetBuilder
 from ..core.config import INPUT_DIR, OUTPUT_DIR
-from ..core.io import load_structures_from_json, save_poset_to_json
+from ..core.io import load_structures_from_json, load_poset_from_json, save_poset_to_json
 from ..core.models import (
     AXIS_ANTERIOR_POSTERIOR,
     AXIS_MEDIOLATERAL,
@@ -141,32 +141,45 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
 
-        # Load structures from file: CLI arg, or default to the latest CoM set
+        # Load structures from file: CLI arg, or default to the latest CoM/poset set
         load_path = self._input_path
         if load_path is None:
-            # Prefer the newer CoM structures file if present.
-            default_file = INPUT_DIR / ".json"
-            if default_file.exists():
-                load_path = str(default_file)
+            # Prefer the normalized cleaned CoM set if present, otherwise fall back.
+            normalized = INPUT_DIR / "CoM_cleaned_normalized_global_avg_xyz.json"
+            cleaned = INPUT_DIR / "CoM_cleaned_global_avg_xyz.json"
+            if normalized.exists():
+                load_path = str(normalized)
+            elif cleaned.exists():
+                load_path = str(cleaned)
         if load_path is not None:
             self._autosave_path = self._builtposet_output_path(Path(load_path))
             try:
-                structures = load_structures_from_json(load_path)
-                self._edges_vertical = set()
-                self._edges_anteroposterior = set()
-                self._edges_mediolateral = set()
-                for s in structures:
-                    self.add_structure_row(
-                        s.name,
-                        str(s.com_vertical),
-                        str(s.com_lateral),
-                        str(s.com_anteroposterior),
+                # Try to load a full poset file (structures + edges for all axes)
+                structures, ev, em, ea = load_poset_from_json(load_path)
+                self._edges_vertical = ev
+                self._edges_mediolateral = em
+                self._edges_anteroposterior = ea
+            except Exception:
+                # Fall back to simple structures-only JSON
+                try:
+                    structures = load_structures_from_json(load_path)
+                    self._edges_vertical = set()
+                    self._edges_anteroposterior = set()
+                    self._edges_mediolateral = set()
+                except Exception as exc:  # noqa: BLE001
+                    QMessageBox.warning(
+                        self,
+                        "Failed to load input",
+                        f"Could not load structures from:\n{load_path}\n\n{exc}",
                     )
-            except Exception as exc:  # noqa: BLE001
-                QMessageBox.warning(
-                    self,
-                    "Failed to load input",
-                    f"Could not load structures from:\n{load_path}\n\n{exc}",
+                    structures = []
+
+            for s in structures:
+                self.add_structure_row(
+                    s.name,
+                    str(s.com_vertical),
+                    str(s.com_lateral),
+                    str(s.com_anteroposterior),
                 )
 
     def _builtposet_output_path(self, input_path: Path) -> Path:
@@ -209,25 +222,34 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            structures = load_structures_from_json(path)
-            self.table.setRowCount(0)
-            self._edges_vertical = set()
-            self._edges_mediolateral = set()
-            self._edges_anteroposterior = set()
-            for s in structures:
-                self.add_structure_row(
-                    s.name,
-                    str(s.com_vertical),
-                    str(s.com_lateral),
-                    str(s.com_anteroposterior),
+            # Prefer a full poset file if it exists (structures + edges per axis)
+            structures, ev, em, ea = load_poset_from_json(path)
+            self._edges_vertical = ev
+            self._edges_mediolateral = em
+            self._edges_anteroposterior = ea
+        except Exception:
+            try:
+                structures = load_structures_from_json(path)
+                self._edges_vertical = set()
+                self._edges_mediolateral = set()
+                self._edges_anteroposterior = set()
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Failed to load",
+                    f"Could not load structures from:\n{path}\n\n{exc}",
                 )
-            self._autosave_path = self._builtposet_output_path(Path(path))
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(
-                self,
-                "Failed to load",
-                f"Could not load structures from:\n{path}\n\n{exc}",
+                return
+
+        self.table.setRowCount(0)
+        for s in structures:
+            self.add_structure_row(
+                s.name,
+                str(s.com_vertical),
+                str(s.com_lateral),
+                str(s.com_anteroposterior),
             )
+        self._autosave_path = self._builtposet_output_path(Path(path))
 
     def add_structure_row(
         self,
@@ -316,13 +338,44 @@ class MainWindow(QMainWindow):
         self.poset_builder = PosetBuilder(structures, axis=axis)
         self.start_btn.setEnabled(False)
 
-        # 1) Generic welcome/instructions window (always shown)
+        # 1) Ask where to save this query's autosave file before starting.
+        # If the user points to an existing poset file, we will update only the
+        # currently selected axis and preserve the others. If they choose a new
+        # path, we create a blank poset file containing all structures and
+        # empty posets for all three axes.
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        suggested = self._autosave_path or self._builtposet_output_path(Path("poset_autosave.json"))
+        save_path_str, _ = QFileDialog.getSaveFileName(
+            self,
+            "Choose where to save this query's poset",
+            str(suggested.parent),
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not save_path_str:
+            # User cancelled save-location selection; abort starting the query.
+            self.start_btn.setEnabled(True)
+            return
+
+        self._autosave_path = Path(save_path_str)
+
+        # If this is a brand-new output file, initialize it with all structures
+        # and empty edge sets for all axes so subsequent queries can fill it.
+        if not self._autosave_path.exists():
+            save_poset_to_json(
+                str(self._autosave_path),
+                structures,
+                edges_vertical=set(),
+                edges_mediolateral=set(),
+                edges_anteroposterior=set(),
+            )
+
+        # 2) Generic welcome/instructions window (always shown)
         welcome_dialog = InstructionsDialog(axis=axis)
         if welcome_dialog.exec() != QDialog.DialogCode.Accepted:
             self.start_btn.setEnabled(True)
             return
 
-        # 2) Axis-specific definition window
+        # 3) Axis-specific definition window
         if axis == AXIS_VERTICAL:
             axis_dialog: QDialog = VerticalDefinitionDialog()
         elif axis == AXIS_MEDIOLATERAL:
@@ -333,7 +386,7 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
 
-        # 3) Start the query dialog
+        # 4) Start the query dialog
         query_dialog = QueryDialog(
             self.poset_builder,
             self._autosave_path,
