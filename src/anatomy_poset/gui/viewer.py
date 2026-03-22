@@ -23,7 +23,12 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QSlider,
     QComboBox,
+    QDialog,
 )
+
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+from matplotlib.colors import ListedColormap, BoundaryNorm
 
 from ..core.io import load_poset_from_json
 from ..core.models import (
@@ -468,9 +473,12 @@ class PosetViewerWindow(QWidget):
 
         self._path = poset_path
         self._structures: List[Structure] = []
-        self._edges_vertical: Set[Tuple[int, int]] = set()
-        self._edges_mediolateral: Set[Tuple[int, int]] = set()
-        self._edges_anteroposterior: Set[Tuple[int, int]] = set()
+        # Tri-valued matrices per axis (loaded from JSON)
+        self._M_vertical: List[List[int]] = []
+        self._M_mediolateral: List[List[int]] = []
+        self._M_anteroposterior: List[List[int]] = []
+        # Keep matrix windows alive as independent top-level windows.
+        self._matrix_windows: List[QDialog] = []
 
         self._tabs = QTabWidget()
         root = QVBoxLayout(self)
@@ -486,12 +494,43 @@ class PosetViewerWindow(QWidget):
             self.resize(w, h)
             self.setMaximumSize(geom.width(), geom.height())
 
+    def _matrix_to_edges(self, M: List[List[int]]) -> Set[Tuple[int, int]]:
+        """Derive pDAG edges (all +1 entries) from a tri-valued matrix."""
+        edges: Set[Tuple[int, int]] = set()
+        n = len(M)
+        for i in range(n):
+            row = M[i]
+            for j in range(min(n, len(row))):
+                if i != j and row[j] == 1:
+                    edges.add((i, j))
+        return edges
+
+    def _matrix_summary_counts(self, M: List[List[int]]) -> Tuple[int, int, int, int]:
+        """Return counts of (+1, 0, -1, -2) entries (off-diagonal only)."""
+        yes = no = unsure = not_asked = 0
+        n = len(M)
+        for i in range(n):
+            row = M[i]
+            for j in range(min(n, len(row))):
+                if i == j:
+                    continue
+                v = row[j]
+                if v == 1:
+                    yes += 1
+                elif v == 0:
+                    unsure += 1
+                elif v == -1:
+                    no += 1
+                else:
+                    not_asked += 1
+        return yes, unsure, no, not_asked
+
     def _fill_tab(
         self,
         list_widget: QListWidget,
         hasse_view: HasseDiagramView,
         structures: List[Structure],
-        edges: Set[Tuple[int, int]],
+        M: List[List[int]],
         axis_label: str,
         relation_label: str,
     ) -> None:
@@ -509,13 +548,40 @@ class PosetViewerWindow(QWidget):
                     f"  {idx}: {s.name} (CoM anteroposterior = {s.com_anteroposterior})"
                 )
         list_widget.addItem("")
-        if not edges:
-            list_widget.addItem(f"No strict '{relation_label}' relations recorded.")
+        if not M:
+            list_widget.addItem("No matrix data available for this axis.")
+            edges: Set[Tuple[int, int]] = set()
         else:
-            list_widget.addItem("Cover relations (Hasse diagram edges):")
-            for u, v in sorted(edges):
-                su, sv = structures[u], structures[v]
-                list_widget.addItem(f"{su.name}  ≻  {sv.name}")
+            # Summarize matrix state
+            yes, unsure, no, not_asked = self._matrix_summary_counts(M)
+            list_widget.addItem("Matrix summary (off-diagonal entries):")
+            list_widget.addItem(f"  +1 (YES / above): {yes}")
+            list_widget.addItem(f"   0 (not sure):   {unsure}")
+            list_widget.addItem(f"  -1 (NO / not-above): {no}")
+            list_widget.addItem(f"  -2 (not asked yet): {not_asked}")
+            list_widget.addItem("")
+
+            # Derive pDAG (= all +1 edges) and then Hasse edges via transitive reduction.
+            from anatomy_poset.core.builder import MatrixBuilder
+
+            mb = MatrixBuilder(structures, axis=AXIS_VERTICAL)  # axis only affects symmetry; OK here
+            mb.M = [row[:] for row in M]  # shallow copy
+            mb._propagate()  # ensure closure for +1 before reduction
+            try:
+                hasse_edges = mb.get_hasse()
+            except Exception:
+                # If cyclic or invalid, fall back to raw pDAG edges.
+                hasse_edges = mb.get_pdag()
+
+            edges = hasse_edges
+
+            if not edges:
+                list_widget.addItem(f"No strict '{relation_label}' relations derived from matrix.")
+            else:
+                list_widget.addItem("Cover relations (Hasse / reduced edges):")
+                for u, v in sorted(edges):
+                    su, sv = structures[u], structures[v]
+                    list_widget.addItem(f"{su.name}  ≻  {sv.name}")
 
         if axis_label == "Vertical":
             axis = AXIS_VERTICAL
@@ -529,9 +595,9 @@ class PosetViewerWindow(QWidget):
         try:
             (
                 self._structures,
-                self._edges_vertical,
-                self._edges_mediolateral,
-                self._edges_anteroposterior,
+                self._M_vertical,
+                self._M_mediolateral,
+                self._M_anteroposterior,
             ) = load_poset_from_json(path)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(
@@ -553,13 +619,17 @@ class PosetViewerWindow(QWidget):
         vert_hasse = HasseDiagramView()
         vert_hasse.setMinimumSize(400, 300)
         vert_diagram_layout.addWidget(vert_hasse)
+        # Matrix view button
+        vert_matrix_btn = QPushButton("Show matrix…")
+        vert_matrix_btn.setToolTip("Visualize the full tri-valued relation matrix for this axis.")
+        vert_diagram_layout.addWidget(vert_matrix_btn)
         vert_layout.addWidget(vert_list_group, stretch=1)
         vert_layout.addWidget(vert_diagram_group, stretch=2)
         self._fill_tab(
             vert_list,
             vert_hasse,
             self._structures,
-            self._edges_vertical,
+            self._M_vertical,
             "Vertical",
             "above",
         )
@@ -577,13 +647,16 @@ class PosetViewerWindow(QWidget):
         ml_hasse = HasseDiagramView()
         ml_hasse.setMinimumSize(400, 300)
         ml_diagram_layout.addWidget(ml_hasse)
+        ml_matrix_btn = QPushButton("Show matrix…")
+        ml_matrix_btn.setToolTip("Visualize the full tri-valued relation matrix for this axis.")
+        ml_diagram_layout.addWidget(ml_matrix_btn)
         ml_layout.addWidget(ml_list_group, stretch=1)
         ml_layout.addWidget(ml_diagram_group, stretch=2)
         self._fill_tab(
             ml_list,
             ml_hasse,
             self._structures,
-            self._edges_mediolateral,
+            self._M_mediolateral,
             "Lateral",
             "to the left of",
         )
@@ -601,17 +674,103 @@ class PosetViewerWindow(QWidget):
         ap_hasse = HasseDiagramView()
         ap_hasse.setMinimumSize(400, 300)
         ap_diagram_layout.addWidget(ap_hasse)
+        ap_matrix_btn = QPushButton("Show matrix…")
+        ap_matrix_btn.setToolTip("Visualize the full tri-valued relation matrix for this axis.")
+        ap_diagram_layout.addWidget(ap_matrix_btn)
         ap_layout.addWidget(ap_list_group, stretch=1)
         ap_layout.addWidget(ap_diagram_group, stretch=2)
         self._fill_tab(
             ap_list,
             ap_hasse,
             self._structures,
-            self._edges_anteroposterior,
+            self._M_anteroposterior,
             "Anteroposterior",
             "in front of",
         )
         self._tabs.addTab(ap_widget, "Anteroposterior (front–back)")
+
+        # Wire matrix buttons
+        def _show_matrix(M: List[List[int]], title: str) -> None:
+            if not M:
+                QMessageBox.information(self, "No data", f"No matrix data available for {title}.")
+                return
+            n = len(M)
+            # Open as a separate top-level window so it can be interacted with
+            # and closed independently from the Poset viewer.
+            dlg = QDialog(None)
+            dlg.setWindowTitle(f"{title} — relation matrix")
+            dlg.resize(800, 600)
+            dlg.setModal(False)
+            layout = QVBoxLayout(dlg)
+
+            # Build a compact numeric array and a discrete colormap for {-2, -1, 0, +1}
+            import numpy as np
+
+            arr = np.full((n, n), -2, dtype=int)
+            for i in range(n):
+                row = M[i]
+                for j in range(min(n, len(row))):
+                    arr[i, j] = int(row[j])
+
+            # Order of levels: -2 (not asked), -1 (no), 0 (not sure), +1 (yes)
+            levels = [-2, -1, 0, 1]
+            colors = [
+                "#f0f0f0",  # -2 not asked (light grey)
+                "#d73027",  # -1 no (red)
+                "#fc8d59",  # 0 not sure (orange)
+                "#1a9850",  # +1 yes (green)
+            ]
+            cmap = ListedColormap(colors)
+            norm = BoundaryNorm([-2.5, -1.5, -0.5, 0.5, 1.5], cmap.N)
+
+            fig = Figure(figsize=(6, 6), tight_layout=True)
+            canvas = FigureCanvas(fig)
+            # Matplotlib toolbar adds pan/zoom/home controls (interactive).
+            # Import is done lazily so the app still starts even if toolbar
+            # backend modules differ across environments.
+            try:
+                from matplotlib.backends.backend_qt5 import NavigationToolbar2QT
+
+                toolbar = NavigationToolbar2QT(canvas, dlg)
+                layout.addWidget(toolbar)
+            except Exception:
+                toolbar = None
+
+            ax = fig.add_subplot(111)
+            im = ax.imshow(arr, cmap=cmap, norm=norm, origin="upper")
+
+            # Use structure names if available; fall back to indices.
+            if len(self._structures) == n:
+                labels = [s.name for s in self._structures]
+            else:
+                labels = [str(i) for i in range(n)]
+
+            ax.set_title(title)
+            ax.set_xlabel("j (target structure)")
+            ax.set_ylabel("i (source structure)")
+            ax.set_xticks(range(n))
+            ax.set_yticks(range(n))
+            ax.set_xticklabels(labels, fontsize=6, rotation=90)
+            ax.set_yticklabels(labels, fontsize=6)
+
+            # Colorbar with labels for each state
+            cbar = fig.colorbar(im, ax=ax, ticks=levels)
+            cbar.ax.set_yticklabels(["-2 not asked", "-1 no", "0 unsure", "+1 yes"])
+
+            layout.addWidget(canvas, stretch=1)
+            self._matrix_windows.append(dlg)
+            dlg.destroyed.connect(lambda *_: self._matrix_windows.remove(dlg) if dlg in self._matrix_windows else None)
+            dlg.show()
+
+        vert_matrix_btn.clicked.connect(
+            lambda: _show_matrix(self._M_vertical, "Vertical axis")
+        )
+        ml_matrix_btn.clicked.connect(
+            lambda: _show_matrix(self._M_mediolateral, "Lateral axis")
+        )
+        ap_matrix_btn.clicked.connect(
+            lambda: _show_matrix(self._M_anteroposterior, "Anteroposterior axis")
+        )
 
 
 class StructureViewsWindow(QWidget):

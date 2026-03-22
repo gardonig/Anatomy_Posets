@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -23,7 +26,11 @@ from PySide6.QtWidgets import (
     QSlider,
 )
 
-from ..core.builder import PosetBuilder, _parse_bilateral_core as parse_bilateral_core
+from ..core.builder import (
+    PosetBuilder,
+    MatrixBuilder,
+    _parse_bilateral_core as parse_bilateral_core,
+)
 from ..core.config import ASSETS_DIR
 from ..core.models import (
     AXIS_ANTERIOR_POSTERIOR,
@@ -82,8 +89,6 @@ def _create_anatomy_views_panel(parent: QDialog) -> QWidget:
         image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Allow in-panel zoom and panning for these anatomy views.
         image_label.enable_interactive_view(True)
-        # Allow the image to grow when the window is resized while keeping a sensible minimum.
-        image_label.setMinimumHeight(img_height)
         # Keep the background white but remove the surrounding border for a cleaner look.
         image_label.setStyleSheet("background: #ffffff; padding: 0px; margin: 0px;")
 
@@ -237,6 +242,9 @@ def _configure_definition_image_label(
     placeholder_text: str,
 ) -> None:
     """Helper to load a definition/example image into a ClickableImageLabel."""
+    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+    # Make definition images large by default, but still shrinkable by layouts.
+    label.set_preferred_size(1200, target_height)
     if img_path.exists():
         pix = QPixmap(str(img_path))
         if not pix.isNull():
@@ -260,6 +268,7 @@ class ClickableImageLabel(QLabel):
         super().__init__(parent)
         self._preview_title = preview_title or "Image preview"
         self._full_pixmap: QPixmap | None = None
+        self._preferred_size: QSize | None = None
         self._hovered = False
         # Slightly shrink the fitted image so it never touches the border/padding.
         self._fit_scale: float = 0.94
@@ -274,6 +283,24 @@ class ClickableImageLabel(QLabel):
         self._last_pos = None
         self._dragged = False
         self.setMouseTracking(True)
+
+        # Important: QLabel's default sizeHint is based on the pixmap size.
+        # For very tall slices (e.g. sagittal), this can make layouts expand the
+        # window unexpectedly. We override size hints below to keep the label
+        # responsive to the available layout space instead of the pixmap dimensions.
+
+    def set_preferred_size(self, w: int, h: int) -> None:
+        self._preferred_size = QSize(max(0, int(w)), max(0, int(h)))
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        # A modest, stable preferred size. The label will still expand to fill
+        # available space due to its size policy.
+        return self._preferred_size or QSize(320, 320)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        # Allow shrinking as much as the layout requires.
+        return QSize(0, 0)
 
     def set_full_pixmap(self, pixmap: QPixmap) -> None:
         """Store the original-resolution pixmap for high-quality preview."""
@@ -447,10 +474,8 @@ class SliceLocationWidget(QWidget):
         self._min_val = 0
         self._max_val = 0
         self._value = 0
-        # Stable, large footprint so the outline does not shrink when switching planes.
-        # Minimum size is set fairly large so it remains very visible.
-        self.setMinimumSize(200, 600)
-        self.setMaximumWidth(180)
+        # Make the outline large (but still shrinkable with the window).
+        self.setMaximumWidth(280)
         self.setSizePolicy(
             QSizePolicy.Policy.Fixed,
             QSizePolicy.Policy.Preferred,
@@ -469,6 +494,8 @@ class SliceLocationWidget(QWidget):
     def set_plane(self, plane: str) -> None:
         self._plane = plane.lower()
         self._reload_pixmap()
+        # Let layouts recompute using the plane-specific sizeHint.
+        self.updateGeometry()
         self.update()
 
     def set_range(self, min_val: int, max_val: int) -> None:
@@ -482,7 +509,12 @@ class SliceLocationWidget(QWidget):
 
     def sizeHint(self) -> QSize:
         """Preferred size so layouts keep the outline large and stable across plane changes."""
-        return QSize(120, 360)
+        # The outline is rendered into a square box (based on min(width, height)).
+        # For the axial plane, a tall widget just creates empty padding above/below,
+        # so keep it closer to square to free vertical space for the slider.
+        if self._plane == "axial":
+            return QSize(220, 260)
+        return QSize(220, 480)
 
     def paintEvent(self, event) -> None:  # noqa: ARG002
         painter = QPainter(self)
@@ -524,7 +556,11 @@ class SliceLocationWidget(QWidget):
         pen.setWidth(3)
         painter.setPen(pen)
         if self._plane in ("sagittal", "coronal"):
-            # Vertical line over the outline: left (min) to right (max)
+            # Vertical line over the outline: left (min) to right (max).
+            # For sagittal, keep the indicator away from the extreme edges:
+            # map t∈[0,1] into [0.1,0.9] of the outline width.
+            if self._plane == "sagittal":
+                t = 0.1 + 0.8 * t
             x_line = target_rect.left() + t * max(1.0, target_rect.width() - 1.0)
             painter.drawLine(
                 int(x_line),
@@ -632,29 +668,34 @@ class FullBodyVolumePanel(QWidget):
         self._image_label = ClickableImageLabel("Full-body slice — full view", parent=parent)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image_label.enable_interactive_view(True)
-        # Encourage a large, panel-filling axial view.
-        self._image_label.setMinimumHeight(600)
         self._image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._image_label.setStyleSheet(
-            "border: 1px solid #e0e0e0; border-radius: 8px; "
-            "background: #000000; padding: 4px; margin-top: 4px;"
+            "border: none; border-radius: 0px; "
+            "background: #000000; padding: 0px; margin-top: 4px;"
         )
         left_col.addWidget(self._image_label)
 
-        right_col = QHBoxLayout()
-        content_row.addLayout(right_col, 1)
+        # Right side: compact slice outline ABOVE the slider controls
+        right_widget = QWidget(self)
+        right_col = QVBoxLayout(right_widget)
+        right_col.setContentsMargins(0, 0, 0, 0)
+        # Keep outline and slider snug so the slider can be as long as possible.
+        right_col.setSpacing(2)
+        content_row.addWidget(right_widget, 1)
 
         self._slice_location = SliceLocationWidget(parent=self)
-        right_col.addWidget(self._slice_location, 0)  # stretch 0: keep outline at sizeHint, do not squeeze
+        right_col.addWidget(self._slice_location, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        slider_col = QVBoxLayout()
-        right_col.addLayout(slider_col, 1)  # stretch 1: slider column takes remaining space
+        slider_widget = QWidget(self)
+        slider_col = QVBoxLayout(slider_widget)
+        slider_col.setContentsMargins(0, 0, 0, 0)
+        right_col.addWidget(slider_widget, 1)
 
         self._prev_btn = QPushButton("▲")
         self._prev_btn.setFixedWidth(32)
         self._prev_btn.clicked.connect(self._step_prev)
         self._prev_btn.setEnabled(False)
-        slider_col.addWidget(self._prev_btn)
+        slider_col.addWidget(self._prev_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         # Vertical slider used for axial and coronal planes.
         self._slider = QSlider(Qt.Orientation.Vertical)
@@ -666,13 +707,14 @@ class FullBodyVolumePanel(QWidget):
         self._slider.setInvertedAppearance(False)
         self._slider.setEnabled(False)
         self._slider.valueChanged.connect(self._on_slider_changed)
-        slider_col.addWidget(self._slider, stretch=1)
+        # Keep the slider centered between the up/down buttons.
+        slider_col.addWidget(self._slider, 1, Qt.AlignmentFlag.AlignHCenter)
 
         self._next_btn = QPushButton("▼")
         self._next_btn.setFixedWidth(32)
         self._next_btn.clicked.connect(self._step_next)
         self._next_btn.setEnabled(False)
-        slider_col.addWidget(self._next_btn)
+        slider_col.addWidget(self._next_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self._index_label = QLabel("Slice: – / –")
         self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -975,7 +1017,7 @@ class InstructionsDialog(QDialog):
         self.setWindowTitle("Instructions — Poset Construction")
         # Use a slightly larger window than the definition dialogs so the image
         # has more room, but still clamp to the available screen geometry.
-        self.resize(1000, 700)
+        self.resize(1200, 800)
         self.setModal(True)
         self._axis = axis
         self.setStyleSheet("background-color: #ffffff;")
@@ -990,9 +1032,9 @@ class InstructionsDialog(QDialog):
             self.resize(w, h)
             self.setMaximumSize(geom.width(), geom.height())
 
-        # Image height to fit window: window height minus heading, button bar, margins
+        # Image height preference: keep it large by default (still shrinkable with window)
         _win_h = self.height()
-        _anatomy_img_height = max(200, _win_h - 140)
+        _anatomy_img_height = max(960, 3 * (_win_h - 140))
 
         # All text: dark on white (no grey backgrounds)
         _text_style = "color: #1a1a1a; font-size: 14px; padding: 6px 0;"
@@ -1022,7 +1064,11 @@ class InstructionsDialog(QDialog):
         anatomy_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Enable in-dialog zoom (mouse wheel) and panning (left-drag) for this image.
         anatomy_img.enable_interactive_view(True)
-        anatomy_img.setFixedHeight(_anatomy_img_height)
+        # Tighten the in-label fit so we don't get visible "extra border" space.
+        anatomy_img.set_fit_scale(1.0)
+        anatomy_img.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Use a wider preferred width so the label doesn't get squashed horizontally.
+        anatomy_img.set_preferred_size(int(self.width() * 0.75), _anatomy_img_height)
         
         # Use updated example figure for anatomical axes.
         anatomy_path = ASSETS_DIR / "definition_images" / "Axes_example.png"
@@ -1039,8 +1085,9 @@ class InstructionsDialog(QDialog):
         
         # Put text and image side-by-side, with content aligned to the top
         intro_row = QHBoxLayout()
-        intro_row.addWidget(intro_label, stretch=3)
-        intro_row.addWidget(anatomy_img, stretch=2)
+        # Give the image more horizontal room so it can render at full width.
+        intro_row.addWidget(intro_label, stretch=1)
+        intro_row.addWidget(anatomy_img, stretch=5)
         intro_row.setAlignment(intro_label, Qt.AlignmentFlag.AlignTop)
         intro_row.setAlignment(anatomy_img, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(intro_row)
@@ -1083,7 +1130,7 @@ class VerticalDefinitionDialog(QDialog):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle('Definition — Vertical "strictly above"')
-        self.resize(820, 520)
+        self.resize(1200, 800)
         self.setModal(True)
         self.setStyleSheet("background-color: #ffffff;")
 
@@ -1104,7 +1151,7 @@ class VerticalDefinitionDialog(QDialog):
 
         # Left column: text (task, definition, question form)
         left_col = QVBoxLayout()
-        content.addLayout(left_col, stretch=3)
+        content.addLayout(left_col, stretch=2)
 
         heading = QLabel('Vertical relation: "strictly above"')
         heading.setStyleSheet(_heading_style)
@@ -1130,10 +1177,12 @@ class VerticalDefinitionDialog(QDialog):
 
         # Right column: textual examples + images side by side (No and Yes)
         right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=4)
+        content.addLayout(right_col, stretch=5)
 
         _img_dir = ASSETS_DIR / "definition_images"
-        img_height = 320
+        screen = QGuiApplication.primaryScreen()
+        avail_h = screen.availableGeometry().height() if screen is not None else 900
+        img_height = max(720, int(avail_h * 0.90))
 
         img_style = IMG_STYLE_DEFAULT
         placeholder_style = PLACEHOLDER_STYLE_DEFAULT
@@ -1144,7 +1193,7 @@ class VerticalDefinitionDialog(QDialog):
 
         examples_col = QVBoxLayout()
         examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=2)
+        examples_and_com.addLayout(examples_col, stretch=3)
 
         # No example (Femur–Tibia)
         no_col = QVBoxLayout()
@@ -1158,12 +1207,11 @@ class VerticalDefinitionDialog(QDialog):
         no_label = ClickableImageLabel("Vertical example 1 — full view")
         no_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         no_label.enable_interactive_view(True)
-        no_label.setFixedHeight(img_height)
         no_label.setStyleSheet(img_style)
         _configure_definition_image_label(
             no_label,
             _img_dir / "example_vert_No.png",
-            img_height,
+            2 * img_height,
             "[Add vertical No example image here]",
         )
         no_col.addWidget(no_label)
@@ -1181,19 +1229,19 @@ class VerticalDefinitionDialog(QDialog):
         yes_label = ClickableImageLabel("Vertical example 2 — full view")
         yes_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         yes_label.enable_interactive_view(True)
-        yes_label.setFixedHeight(img_height)
         yes_label.setStyleSheet(img_style)
         _configure_definition_image_label(
             yes_label,
             _img_dir / "eample_vert_Yes.png",
-            img_height,
+            2 * img_height,
             "[Add vertical Yes example image here]",
         )
         yes_col.addWidget(yes_label)
 
         # CoM explanation + image to the right of the examples
         com_col = QVBoxLayout()
-        examples_and_com.addLayout(com_col, stretch=1)
+        # Give the CoM panel much more space than the examples panel by default.
+        examples_and_com.addLayout(com_col, stretch=3)
 
         com_heading = QLabel("Center of mass (CoM)")
         com_heading.setStyleSheet(_heading_style)
@@ -1210,12 +1258,13 @@ class VerticalDefinitionDialog(QDialog):
         com_img = ClickableImageLabel("Vertical CoM — full view")
         com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         com_img.enable_interactive_view(True)
-        com_img.setFixedHeight(2 * img_height)
         com_img.setStyleSheet(img_style)
+        # Make the third image (CoM) much larger by default.
+        com_img.set_preferred_size(2200, 4 * img_height)
         _configure_definition_image_label(
             com_img,
             _img_dir / "Vertical_CoM_numbers.png",
-            2 * img_height,
+            4 * img_height,
             "[Add vertical CoM image here]",
         )
         com_col.addWidget(com_img)
@@ -1256,7 +1305,7 @@ class MediolateralDefinitionDialog(QDialog):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle('Definition — Lateral "strictly to the left of"')
-        self.resize(820, 520)
+        self.resize(1200, 800)
         self.setModal(True)
         self.setStyleSheet("background-color: #ffffff;")
 
@@ -1277,7 +1326,7 @@ class MediolateralDefinitionDialog(QDialog):
 
         # Left column: text (task, definition, question form)
         left_col = QVBoxLayout()
-        content.addLayout(left_col, stretch=3)
+        content.addLayout(left_col, stretch=2)
 
         heading = QLabel('Lateral relation: "strictly to the left of"')
         heading.setStyleSheet(_heading_style)
@@ -1312,10 +1361,12 @@ class MediolateralDefinitionDialog(QDialog):
 
         # Right column: two examples side-by-side (text above image)
         right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=4)
+        content.addLayout(right_col, stretch=8)
 
         _img_dir = ASSETS_DIR / "definition_images"
-        img_height = 280
+        screen = QGuiApplication.primaryScreen()
+        avail_h = screen.availableGeometry().height() if screen is not None else 900
+        img_height = max(720, int(avail_h * 0.84))
 
         img_style = IMG_STYLE_DEFAULT
         placeholder_style = PLACEHOLDER_STYLE_DEFAULT
@@ -1326,7 +1377,7 @@ class MediolateralDefinitionDialog(QDialog):
 
         examples_col = QVBoxLayout()
         examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=2)
+        examples_and_com.addLayout(examples_col, stretch=4)
 
         # Example (Yes)
         yes_col = QVBoxLayout()
@@ -1343,12 +1394,11 @@ class MediolateralDefinitionDialog(QDialog):
         ex1_img = ClickableImageLabel("Lateral example 1 — full view")
         ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ex1_img.enable_interactive_view(True)
-        ex1_img.setFixedHeight(img_height)
         ex1_img.setStyleSheet(img_style)
         _configure_definition_image_label(
             ex1_img,
             _img_dir / "example_lat_yes.png",
-            img_height,
+            2 * img_height,
             "[Add mediolateral Yes example image here]",
         )
         yes_col.addWidget(ex1_img)
@@ -1369,19 +1419,18 @@ class MediolateralDefinitionDialog(QDialog):
         ex2_img = ClickableImageLabel("Lateral example 2 — full view")
         ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ex2_img.enable_interactive_view(True)
-        ex2_img.setFixedHeight(img_height)
         ex2_img.setStyleSheet(img_style)
         _configure_definition_image_label(
             ex2_img,
             _img_dir / "example_lat_no.png",
-            img_height,
+            2 * img_height,
             "[Add mediolateral No example image here]",
         )
         no_col.addWidget(ex2_img)
 
         # CoM explanation + image to the right of the examples
         com_col = QVBoxLayout()
-        examples_and_com.addLayout(com_col, stretch=1)
+        examples_and_com.addLayout(com_col, stretch=2)
 
         com_heading = QLabel("Center of mass (CoM)")
         com_heading.setStyleSheet(_heading_style)
@@ -1398,14 +1447,16 @@ class MediolateralDefinitionDialog(QDialog):
         com_img = ClickableImageLabel("Lateral CoM — full view")
         com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         com_img.enable_interactive_view(True)
-        com_img.setFixedHeight(2 * img_height)
         com_img.setStyleSheet(img_style)
         _configure_definition_image_label(
             com_img,
             _img_dir / "Lateral_CoM_numbers.png",
-            2 * img_height,
+            4 * img_height,
             "[Add mediolateral CoM image here]",
         )
+        # Match the vertical dialog: give CoM more horizontal room so it can
+        # render at full scale (otherwise the label gets squeezed width-wise).
+        com_img.set_preferred_size(2200, 4 * img_height)
         com_col.addWidget(com_img)
 
         # Proceed button + image source note below all content
@@ -1418,7 +1469,7 @@ class MediolateralDefinitionDialog(QDialog):
         source.setWordWrap(True)
         source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
         btn_row.addWidget(source)
-        btn_row.addStretch(1)
+        btn_row.addStretch(2)
         proceed_btn = QPushButton("Proceed")
         proceed_btn.setStyleSheet(
             """
@@ -1444,7 +1495,7 @@ class AnteroposteriorDefinitionDialog(QDialog):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle('Definition — Anteroposterior "strictly in front of"')
-        self.resize(820, 520)
+        self.resize(1200, 800)
         self.setModal(True)
         self.setStyleSheet("background-color: #ffffff;")
 
@@ -1465,7 +1516,7 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         # Left column: text (task, definition, question form)
         left_col = QVBoxLayout()
-        content.addLayout(left_col, stretch=3)
+        content.addLayout(left_col, stretch=6)
 
         heading = QLabel('Anteroposterior relation: "strictly in front of"')
         heading.setStyleSheet(_heading_style)
@@ -1492,7 +1543,7 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         # Right column: two examples side-by-side (text above image)
         right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=4)
+        content.addLayout(right_col, stretch=6)
 
         img_height = 280
 
@@ -1500,6 +1551,9 @@ class AnteroposteriorDefinitionDialog(QDialog):
         placeholder_style = PLACEHOLDER_STYLE_DEFAULT
 
         _img_dir = ASSETS_DIR / "definition_images"
+        screen = QGuiApplication.primaryScreen()
+        avail_h = screen.availableGeometry().height() if screen is not None else 900
+        img_height = max(720, int(avail_h * 0.84))
 
         # Left: examples stacked vertically, Right: CoM explanation + image
         examples_and_com = QHBoxLayout()
@@ -1507,7 +1561,7 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         examples_col = QVBoxLayout()
         examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=2)
+        examples_and_com.addLayout(examples_col, stretch=4)
 
         # Example (Yes)
         yes_col = QVBoxLayout()
@@ -1523,12 +1577,11 @@ class AnteroposteriorDefinitionDialog(QDialog):
         ex1_img = ClickableImageLabel("Anteroposterior example 1 — full view")
         ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ex1_img.enable_interactive_view(True)
-        ex1_img.setFixedHeight(img_height)
         ex1_img.setStyleSheet(img_style)
         _configure_definition_image_label(
             ex1_img,
             _img_dir / "example_ap_yes.png",
-            img_height,
+            2 * img_height,
             "[Add anteroposterior Yes example image here]",
         )
         yes_col.addWidget(ex1_img)
@@ -1548,19 +1601,18 @@ class AnteroposteriorDefinitionDialog(QDialog):
         ex2_img = ClickableImageLabel("Anteroposterior example 2 — full view")
         ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ex2_img.enable_interactive_view(True)
-        ex2_img.setFixedHeight(img_height)
         ex2_img.setStyleSheet(img_style)
         _configure_definition_image_label(
             ex2_img,
             _img_dir / "example_ap_no.png",
-            img_height,
+            2 * img_height,
             "[Add anteroposterior No example image here]",
         )
         no_col.addWidget(ex2_img)
 
         # CoM explanation + image to the right of the examples
         com_col = QVBoxLayout()
-        examples_and_com.addLayout(com_col, stretch=1)
+        examples_and_com.addLayout(com_col, stretch=2)
 
         com_heading = QLabel("Center of mass (CoM)")
         com_heading.setStyleSheet(_heading_style)
@@ -1577,14 +1629,16 @@ class AnteroposteriorDefinitionDialog(QDialog):
         com_img = ClickableImageLabel("Anteroposterior CoM — full view")
         com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         com_img.enable_interactive_view(True)
-        com_img.setFixedHeight(2 * img_height)
         com_img.setStyleSheet(img_style)
         _configure_definition_image_label(
             com_img,
             _img_dir / "AP_CoM_numbers.png",
-            2 * img_height,
+            4 * img_height,
             "[Add anteroposterior CoM image here]",
         )
+        # Match the vertical dialog: give CoM more horizontal room so it can
+        # render at full scale (otherwise the label gets squeezed width-wise).
+        com_img.set_preferred_size(2200, 4 * img_height)
         com_col.addWidget(com_img)
 
         # Proceed button + image source note below all content
@@ -1625,40 +1679,25 @@ class QueryDialog(QDialog):
         poset_builder: PosetBuilder,
         autosave_path: Path,
         axis: str,
-        save_callback: Callable[[str, List[Structure], Set[Tuple[int, int]]], None],
+        save_callback: Callable[[str, List[Structure], List[List[int]]], None],
     ) -> None:
         super().__init__()
         self.setWindowTitle("Expert Query")
-        # Initial preferred size; we will clamp and then fix it to the screen below.
+        # Initial preferred size (user can resize freely).
         self.resize(1100, 580)
         self.setModal(False)
+        self._clamping_geometry: bool = False
 
         self.poset_builder = poset_builder
         self._autosave_path = autosave_path
         self._axis = axis
         self._save_callback = save_callback
+        self._feedback_log_path: Path | None = None
         self.pending_pair: Tuple[int, int] | None = None
         # answer is True (Yes), False (No), or None ("Not sure"/skipped)
         self._answer_history: List[Tuple[int, int, Optional[bool]]] = []
-        # Fix the window size once so it never grows or shrinks when sliders/planes change.
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geom = screen.availableGeometry()
-            w = min(self.width(), geom.width())
-            h = min(self.height(), geom.height())
-            fixed = QSize(w, h)
-            self.resize(fixed)
-            # Lock both minimum and maximum size to this clamped geometry.
-            self.setMinimumSize(fixed)
-            self.setMaximumSize(fixed)
-
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geom = screen.availableGeometry()
-            w = min(self.width(), geom.width())
-            h = min(self.height(), geom.height())
-            self.resize(w, h)
-            self.setMaximumSize(geom.width(), geom.height())
+        # Clamp initial size to screen, but do not lock min/max.
+        self._clamp_to_current_screen()
 
         # For vertical axis, detect bilateral (Left/Right) cores to combine in question text
         self._bilateral_cores: Set[str] = set()
@@ -1743,6 +1782,18 @@ class QueryDialog(QDialog):
         )
         card_layout.addWidget(self.com_label)
         questions_layout.addWidget(self.question_card)
+
+        self.feedback_box = QPlainTextEdit()
+        self.feedback_box.setPlaceholderText(
+            "Optional comment/feedback on this question / your answer (e.g. ambiguity, missing context, unsure anatomy, etc.)"
+        )
+        # Compact by default, but allow shrinking with the window.
+        self.feedback_box.setMaximumHeight(90)
+        self.feedback_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.feedback_box.setStyleSheet(
+            "background: #ffffff; color: #1a1a1a; border: 1px solid #e0e0e0; border-radius: 8px; padding: 8px;"
+        )
+        questions_layout.addWidget(self.feedback_box)
 
         # Back, Yes, No
         btn_row = QHBoxLayout()
@@ -1839,7 +1890,6 @@ class QueryDialog(QDialog):
         questions_layout.addWidget(self.finish_btn)
 
         # Do not let the questions panel stretch to fill all remaining vertical space.
-        from PySide6.QtWidgets import QSizePolicy
         questions_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         left_col.addWidget(questions_group)
@@ -1853,7 +1903,7 @@ class QueryDialog(QDialog):
         overview_label = ClickableImageLabel("Segmentation classes overview — full view", self)
         overview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         overview_label.enable_interactive_view(True)
-        overview_label.setFixedHeight(220)
+        overview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         overview_label.setStyleSheet(
             "background: #ffffff; padding: 0px; margin: 8px 0 4px 0;"
         )
@@ -1934,13 +1984,119 @@ class QueryDialog(QDialog):
 
         self._advance_to_next_query()
 
+    def _clamp_to_current_screen(self) -> None:
+        """
+        Clamp this window's size to the available geometry of the screen the
+        window is currently on. We intentionally do not clamp position so the
+        user can move the dialog partly off-screen, like a normal macOS window.
+        """
+        if self._clamping_geometry:
+            return
+        self._clamping_geometry = True
+        try:
+            # Prefer the screen under the window center; fall back to primary.
+            center = self.frameGeometry().center()
+            screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+            avail = screen.availableGeometry()
+
+            # Hard cap: never allow the *outer* window frame to exceed the current screen.
+            # Qt's availableGeometry() is in the same coordinate system as the window, but
+            # the window decorations (title bar/borders) add extra size beyond self.size().
+            # If we don't account for that, the frame can spill off-screen even if the
+            # content size is <= availableGeometry().
+            frame_extra_w = max(0, self.frameGeometry().width() - self.size().width())
+            frame_extra_h = max(0, self.frameGeometry().height() - self.size().height())
+            max_w = max(200, avail.width() - frame_extra_w)
+            max_h = max(200, avail.height() - frame_extra_h)
+            self.setMaximumSize(max_w, max_h)
+
+            # Clamp size (never exceed current screen once frame is included).
+            new_w = min(self.width(), max_w)
+            new_h = min(self.height(), max_h)
+            if new_w != self.width() or new_h != self.height():
+                self.resize(new_w, new_h)
+        finally:
+            self._clamping_geometry = False
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._clamp_to_current_screen()
+
+    def moveEvent(self, event) -> None:  # type: ignore[override]
+        # Update max size when the window is moved to another monitor.
+        super().moveEvent(event)
+        self._clamp_to_current_screen()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        # Ensure we never exceed the current monitor size even after UI-triggered resizes.
+        super().resizeEvent(event)
+        self._clamp_to_current_screen()
+
     def _autosave_poset(self) -> None:
         if not self._autosave_path or not self._save_callback:
             return
         try:
-            structures, edges = self.poset_builder.get_final_relations()
-            self._save_callback(self._axis, structures, edges)
+            # MatrixBuilder exposes a full tri-valued matrix; fall back to classical edges if needed.
+            from anatomy_poset.core.builder import MatrixBuilder  # local import to avoid cycles
+
+            if isinstance(self.poset_builder, MatrixBuilder):
+                structures = self.poset_builder.structures
+                matrix = self.poset_builder.M  # type: ignore[attr-defined]
+            else:
+                # Classical builder: derive a +1 / 0 matrix from the final Hasse edges.
+                structures, edges = self.poset_builder.get_final_relations()
+                n = len(structures)
+                matrix = [[-2 for _ in range(n)] for _ in range(n)]
+                for i in range(n):
+                    matrix[i][i] = -1
+                for u, v in edges:
+                    if 0 <= u < n and 0 <= v < n:
+                        matrix[u][v] = 1
+
+            self._save_callback(self._axis, structures, matrix)
         except Exception:
+            pass
+
+    def _append_feedback_report(
+        self,
+        *,
+        question_text: str,
+        answer: Optional[bool],
+        feedback: str,
+    ) -> None:
+        """
+        Append a feedback report entry to a timestamped .jsonl file next to the autosave JSON.
+        A file is created the first time feedback is provided.
+        """
+        feedback = (feedback or "").strip()
+        if not feedback:
+            return
+        try:
+            ts = datetime.now(timezone.utc).isoformat()
+            if self._feedback_log_path is None:
+                base_dir = self._autosave_path.parent
+                stem = self._autosave_path.stem
+                session_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                self._feedback_log_path = base_dir / f"{stem}.feedback.{session_ts}.jsonl"
+
+            entry = {
+                "timestamp_utc": ts,
+                "axis": self._axis,
+                "question": question_text,
+                "answer": (
+                    "yes" if answer is True else
+                    "no" if answer is False else
+                    "not_sure"
+                ),
+                "feedback": feedback,
+            }
+            self._feedback_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._feedback_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            # Feedback logging must never interrupt querying.
             pass
 
     def _advance_to_next_query(self) -> None:
@@ -1948,13 +2104,16 @@ class QueryDialog(QDialog):
         self.pending_pair = pair
         if pair is not None:
             i, j = pair
-            # Never ask "is the lungs above the lungs" — skip same bilateral core (left vs right).
-            core_i = self._bilateral_core_for_index(i)
-            core_j = self._bilateral_core_for_index(j)
-            if core_i is not None and core_i == core_j:
-                self.poset_builder.record_skip(i, j)
-                self._advance_to_next_query()
-                return
+            # Only for vertical axis do we collapse bilateral same-core pairs.
+            # For lateral/AP we intentionally ask left/right sides separately.
+            if self._axis == AXIS_VERTICAL:
+                # Never ask "is the lungs above the lungs" — skip same bilateral core (left vs right).
+                core_i = self._bilateral_core_for_index(i)
+                core_j = self._bilateral_core_for_index(j)
+                if core_i is not None and core_i == core_j:
+                    self.poset_builder.record_skip(i, j)
+                    self._advance_to_next_query()
+                    return
         if pair is None:
             self._autosave_poset()
             self.query_label.setText(
@@ -2009,13 +2168,38 @@ class QueryDialog(QDialog):
     def answer_query(self, is_above: Optional[bool]) -> None:
         if self.pending_pair is None:
             return
+        # Save optional feedback (if any) along with the question and answer.
+        try:
+            feedback_text = self.feedback_box.toPlainText() if self.feedback_box is not None else ""
+            self.feedback_box.clear()
+        except Exception:
+            feedback_text = ""
+        self._append_feedback_report(
+            question_text=self.query_label.text(),
+            answer=is_above,
+            feedback=feedback_text,
+        )
         i, j = self.pending_pair
         self._answer_history.append((i, j, is_above))
         self.back_btn.setEnabled(True)
-        if is_above is True:
-            self.poset_builder.record_response(i, j, True)
-        elif is_above is None:
-            self.poset_builder.record_skip(i, j)
+
+        # Prefer tri-valued MatrixBuilder semantics when available.
+        if isinstance(self.poset_builder, MatrixBuilder):
+            if is_above is True:
+                # YES: i above j
+                self.poset_builder.record_response_matrix(i, j, 1)
+            elif is_above is False:
+                # NO: i is not above j
+                self.poset_builder.record_response_matrix(i, j, -1)
+            else:
+                # NOT SURE
+                self.poset_builder.record_unknown(i, j)
+        else:
+            # Backward-compatible behaviour for classical PosetBuilder.
+            if is_above is True:
+                self.poset_builder.record_response(i, j, True)
+            elif is_above is None:
+                self.poset_builder.record_skip(i, j)
         self._autosave_poset()
         self._advance_to_next_query()
 

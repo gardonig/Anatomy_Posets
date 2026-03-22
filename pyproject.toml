@@ -12,6 +12,11 @@ dependencies = [
     "PySide6>=6.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
 [project.scripts]
 anatomy-poset = "anatomy_poset.main:main"
 
