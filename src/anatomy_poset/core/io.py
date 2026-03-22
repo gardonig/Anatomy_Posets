@@ -1,6 +1,6 @@
 import json
 from dataclasses import asdict
-from typing import List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .models import Structure
 
@@ -36,6 +36,7 @@ def save_poset_to_json(
     matrix_vertical: List[List[int]],
     matrix_mediolateral: List[List[int]] | None = None,
     matrix_anteroposterior: List[List[int]] | None = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Save tri-valued relation matrices to JSON. All axes stored in one file.
@@ -45,18 +46,22 @@ def save_poset_to_json(
       -1: explicit "no" / not-above
        0: asked but "not sure"
       +1: "yes" / above
+
+    ``extra`` is merged into the top-level JSON object (e.g. merge metadata).
     """
     if matrix_mediolateral is None:
         matrix_mediolateral = []
     if matrix_anteroposterior is None:
         matrix_anteroposterior = []
 
-    payload = {
+    payload: Dict[str, Any] = {
         "structures": [asdict(s) for s in structures],
         "matrix_vertical": matrix_vertical,
         "matrix_mediolateral": matrix_mediolateral,
         "matrix_anteroposterior": matrix_anteroposterior,
     }
+    if extra:
+        payload.update(extra)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 

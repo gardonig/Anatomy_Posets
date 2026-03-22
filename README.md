@@ -7,6 +7,48 @@ Clinicians specify relative positions of structures (vertical, mediolateral, ant
 
 ---
 
+## Relation matrices (one per axis)
+
+For each anatomical axis (vertical, mediolateral, anteroposterior), the app maintains a square **tri-valued relation matrix** \(M\) with one row/column per structure (after sorting—see below).
+
+| Entry | Meaning |
+|-------|---------|
+| **+1** | Structure \(i\) is **strictly above** structure \(j\) along that axis (directed “yes”). |
+| **0** | The pair was **asked**; the expert is **not sure** (still directional). |
+| **−1** | \(i\) is **not** strictly above \(j\) (includes “no”, overlap, or opposite direction implied by the CoM prior). |
+| **−2** | **Not asked yet** (or never queried for that directed cell). |
+
+**Diagonal** entries are fixed to **−1** (self-relations are not “strictly above”).  
+After **canonical sorting** by CoM on the active axis (descending), **lower triangle** entries with **column index \(j < i\)** are **sealed** to **−1**: in that order, structure \(i\) cannot lie strictly above \(j\) on the \(i\!>\!j\) side of the diagonal. The **strict upper triangle** (\(j > i\) in row-major layout) is where expert queries and inference fill **+1**, **0**, or **−1**; **−2** is “still open”.
+
+---
+
+## How the matrix is built (algorithm)
+
+1. **Sort structures** by the chosen axis CoM (descending), matching `MatrixBuilder` / `PosetBuilder`.
+2. **Initialize** \(M\): diagonal **−1**, lower triangle **−1**, upper triangle **−2** (plus bilateral / equal-CoM rules as implemented).
+3. **Gap-based queries** (`next_pair`): pairs \((i, j)\) with \(j = i + \text{gap}\) are considered in order of increasing gap (1, 2, …). Pairs already decided (not **−2**), implied by **transitive +1** reachability, or skipped by vertical bilateral symmetry rules are not asked again.
+4. **Optional region subsets**: you can restrict **which pairs are asked** to those whose **both** endpoints lie in selected body-region presets; the **saved JSON still lists every structure** and the same **n×n** matrix size so merges stay compatible.
+5. **After each answer**, **propagation** updates the matrix: transitive **+1** chains, inverse **−1** when a side is **+1**, mirroring for left/right cores on the vertical axis, and **closure of unknowns** where reachability on **+1** edges forces a direction.  
+6. **Saved file** stores three matrices (`matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior`) plus the full **structures** list.
+
+**Hasse diagram (viewer)** shows only **cover edges** derived from **+1** entries (transitive reduction of the strict “above” relation). It does **not** draw “unsure” **0** pairs.
+
+---
+
+## Merging multiple raters / sessions
+
+The viewer’s **Merge JSON files…** combines several saved posets that describe the **same** set of anatomical structures.
+
+1. **Align** non-reference files to the **first** file’s structure order: index \(i\) must refer to the same organ across files. If the JSON order differs, matrices are **permuted** by matching **name + CoM** (within tolerance), or merge fails if sets are incompatible.
+2. **Canonical sort per axis** (vertical / mediolateral / anteroposterior) reorders each rater’s matrix for that axis (CoM descending) and **reseals** the lower triangle to **−1**.
+3. **Per-cell aggregation** (`aggregate_matrices_with_counts`): for each directed pair \((i,j)\), each rater contributes **−2** (not asked), or **−1 / 0 / +1** if answered. **−2** is excluded from the mean and vote counts.
+4. **Consensus matrix** (for Hasse / saved merged JSON): **plurality vote** on \(\{-1,0,+1\}\) over answered raters. If **two** values tie for the count, the tie is broken by **rounding the arithmetic mean** to \(\{-1,0,+1\}\) (same convention as `aggregate_to_consensus_matrix` in code).
+5. **Merged heatmap** (optional): **P(yes) = (μ + 1) / 2** where **μ** is the mean of answered codes **only** (so partial overlap with one rater **−2** and one **0** gives **μ = 0** → **P = 0.5**; **0** and **+1** from both raters gives **μ = 0.5** → **P = 0.75**).
+6. **Save** writes one JSON with **structures** in vertical-CoM order and **reindexed** mediolateral / anteroposterior matrices to that same label order.
+
+---
+
 ## Setup
 
 Requirements:

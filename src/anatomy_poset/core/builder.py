@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Dict, List, Optional, Set, Tuple
 
 from .models import AXIS_ANTERIOR_POSTERIOR, AXIS_MEDIOLATERAL, AXIS_VERTICAL, Structure
@@ -288,10 +290,23 @@ class MatrixBuilder(PosetBuilder):
 
     The underlying DAG used for Hasse diagrams is still derived solely from
     the +1 entries; the matrix simply preserves richer annotation state.
+
+    Optional ``query_allowed_indices`` (constructor keyword): if provided, :meth:`next_pair`
+    only returns pairs ``(i, j)`` with both endpoints in that index set. The matrix
+    remains ``n×n`` for the full structure list so saved JSON stays merge-compatible
+    across raters; cells outside the query subset may stay ``-2`` or be filled by
+    propagation only.
     """
 
-    def __init__(self, structures: List[Structure], axis: str = AXIS_VERTICAL) -> None:
+    def __init__(
+        self,
+        structures: List[Structure],
+        axis: str = AXIS_VERTICAL,
+        *,
+        query_allowed_indices: Optional[Set[int]] = None,
+    ) -> None:
         super().__init__(structures, axis=axis)
+        self._query_allowed_indices: Optional[Set[int]] = query_allowed_indices
         # Structures are sorted by this axis CoM descending (see PosetBuilder.__init__).
         # M[i][j] = "i strictly above j". For i > j, structure i has lower (or equal) CoM than j,
         # so i cannot be strictly above j when CoMs differ; lower triangle is prefilled -1.
@@ -325,6 +340,24 @@ class MatrixBuilder(PosetBuilder):
         # the other; close any remaining -2 in both directions. Strict CoM order
         # is already reflected in the lower-triangle init above.
         self._apply_com_not_above_prior()
+
+    def seal_lower_triangle_com_prior(self) -> None:
+        """
+        Re-apply CoM-based lower triangle (-1), bilateral symmetric NOs, and tie
+        closure. Call before persisting so JSON does not keep spurious `-2`
+        below the diagonal from older partial saves or loaded files.
+        """
+        n = self.n
+        for i in range(n):
+            for j in range(i):
+                self.M[i][j] = -1
+        if self.axis == AXIS_VERTICAL and self._symmetric_partner:
+            for i, j in self._symmetric_partner.items():
+                if i != j:
+                    self.M[i][j] = -1
+        self._apply_com_not_above_prior()
+        if self.axis == AXIS_VERTICAL and self._symmetric_partner:
+            self._sync_vertical_bilateral_mirrors()
 
     # ---- Matrix-based helpers ----
     def _apply_com_not_above_prior(self) -> None:
@@ -378,6 +411,60 @@ class MatrixBuilder(PosetBuilder):
 
         self.M[a][b] = new_val
 
+    def _sync_vertical_bilateral_mirrors(self) -> None:
+        """
+        Left/Right same-core pairs must end with identical tri-values for mirrored
+        relations: (Left, X) matches (Right, X) and (Y, Left) matches (Y, Right).
+
+        Uses the smaller index within each bilateral pair as tie-breaker when both
+        sides were already non--2 but disagree (should be rare).
+        """
+        if self.axis != AXIS_VERTICAL or not self._symmetric_partner:
+            return
+
+        n = self.n
+        changed = True
+        while changed:
+            changed = False
+            # Row partners: for each column k, M[a][k] == M[b][k]
+            for i in range(n):
+                mi = self._symmetric_partner.get(i)
+                if mi is None or i > mi:
+                    continue
+                a, b = i, mi
+                for k in range(n):
+                    va, vb = self.M[a][k], self.M[b][k]
+                    if va == -2 and vb == -2:
+                        continue
+                    if va != -2 and vb == -2:
+                        self.M[b][k] = va
+                        changed = True
+                    elif vb != -2 and va == -2:
+                        self.M[a][k] = vb
+                        changed = True
+                    elif va != -2 and vb != -2 and va != vb:
+                        self.M[b][k] = va
+                        changed = True
+            # Column partners: for each row k, M[k][a] == M[k][b]
+            for j in range(n):
+                mj = self._symmetric_partner.get(j)
+                if mj is None or j > mj:
+                    continue
+                a, b = j, mj
+                for k in range(n):
+                    va, vb = self.M[k][a], self.M[k][b]
+                    if va == -2 and vb == -2:
+                        continue
+                    if va != -2 and vb == -2:
+                        self.M[k][b] = va
+                        changed = True
+                    elif vb != -2 and va == -2:
+                        self.M[k][a] = vb
+                        changed = True
+                    elif va != -2 and vb != -2 and va != vb:
+                        self.M[k][b] = va
+                        changed = True
+
     def _enforce_vertical_symmetry_consistency(self) -> None:
         """
         Guarantee that whenever one side of a bilateral comparison becomes
@@ -390,23 +477,11 @@ class MatrixBuilder(PosetBuilder):
         if self.axis != AXIS_VERTICAL or not self._symmetric_partner:
             return
 
+        # Copy non--2 answers across bilateral mirrors (handles propagation / close
+        # filling one side but not the other; _merge_cell alone cannot copy -2 over known).
+        self._sync_vertical_bilateral_mirrors()
+
         n = self.n
-        for i in range(n):
-            mi = self._symmetric_partner.get(i)
-            for j in range(n):
-                mj = self._symmetric_partner.get(j)
-
-                val = self.M[i][j]
-                # Source mirror (only if source has a partner)
-                if mi is not None:
-                    self._merge_cell(mi, j, val)
-                # Target mirror (only if target has a partner)
-                if mj is not None:
-                    self._merge_cell(i, mj, val)
-                # Double mirror (only if both sides have partners)
-                if mi is not None and mj is not None:
-                    self._merge_cell(mi, mj, val)
-
         # Maintain asymmetry for explicitly set values.
         for a in range(n):
             for b in range(n):
@@ -534,11 +609,45 @@ class MatrixBuilder(PosetBuilder):
                                 self.M[k][i] = -1
                             changed = True
 
+        # Transitive +1 inference above is blocked when com(i) <= com(k) even if a +1 path
+        # exists in M (user answers can disagree with raw CoM). next_pair() would still
+        # skip such pairs because path_exists_matrix is True, leaving M[i][j] == -2 forever.
+        self._close_transitive_unknowns()
+
         # After propagation, keep self.edges in sync with +1 entries
         # and re-apply the strict NO constraint for symmetric pairs.
         self._enforce_symmetric_no_constraints()
         self._enforce_vertical_symmetry_consistency()
         self.edges = self.get_pdag()
+
+    def _close_transitive_unknowns(self) -> None:
+        """
+        For any cell still -2, if reachability on +1 edges shows i→…→j or j→…→i,
+        set the directed cells to match (so next_pair and saved matrices stay consistent).
+        """
+        n = self.n
+        changed = True
+        while changed:
+            changed = False
+            for i in range(n):
+                for j in range(n):
+                    if i == j or self.M[i][j] != -2:
+                        continue
+                    ij = self.path_exists_matrix(i, j)
+                    ji = self.path_exists_matrix(j, i)
+                    if ij and ji:
+                        # Cyclic reachability on +1 — leave ambiguous; do not guess.
+                        continue
+                    if ij:
+                        self.M[i][j] = 1
+                        if self.M[j][i] == -2:
+                            self.M[j][i] = -1
+                        changed = True
+                    elif ji:
+                        self.M[i][j] = -1
+                        if self.M[j][i] == -2:
+                            self.M[j][i] = 1
+                        changed = True
 
     # ---- Query iteration using M ----
     def next_pair(self) -> Tuple[int, int] | None:  # type: ignore[override]
@@ -566,12 +675,23 @@ class MatrixBuilder(PosetBuilder):
                     if pi is not None and pi == j:
                         continue
 
+                # Subset runs: only ask pairs whose endpoints are both in the allowed index set
+                if self._query_allowed_indices is not None:
+                    if i not in self._query_allowed_indices or j not in self._query_allowed_indices:
+                        continue
+
                 # Skip if already answered in any way
                 if self.M[i][j] != -2:
                     continue
 
-                # Skip if relation is already implied by transitivity in either direction
-                if self.path_exists_matrix(i, j) or self.path_exists_matrix(j, i):
+                # Transitive reachability on +1 (after _close_transitive_unknowns in _propagate,
+                # ij xor ji should have closed M[i][j]; if both directions exist, +1 graph has a cycle).
+                ij = self.path_exists_matrix(i, j)
+                ji = self.path_exists_matrix(j, i)
+                if ij or ji:
+                    if ij and ji:
+                        # Cycle: we cannot infer; still ask the expert
+                        return i, j
                     continue
 
                 return i, j
@@ -589,16 +709,30 @@ class MatrixBuilder(PosetBuilder):
         """
         if self.n <= 1:
             return 1.0
-        total = self.n * (self.n - 1) // 2
-        if total == 0:
-            return 1.0
+        allowed = self._query_allowed_indices
+        if allowed is None:
+            total = self.n * (self.n - 1) // 2
+            if total == 0:
+                return 1.0
+            answered = 0
+            for i in range(self.n):
+                for j in range(i + 1, self.n):
+                    if self.M[i][j] != -2:
+                        answered += 1
+            return min(1.0, answered / total)
 
+        # Progress only over unordered pairs (i<j) that could be asked (both in allowed)
+        total = 0
         answered = 0
         for i in range(self.n):
             for j in range(i + 1, self.n):
+                if i not in allowed or j not in allowed:
+                    continue
+                total += 1
                 if self.M[i][j] != -2:
                     answered += 1
-
+        if total == 0:
+            return 1.0
         return min(1.0, answered / total)
 
     # ---- Graph views derived from M ----
@@ -641,30 +775,11 @@ def aggregate_matrices(matrices: List[List[List[int]]]) -> List[List[float]]:
     For each (i, j):
       - ignore entries where M[i][j] == -2 (never asked)
       - otherwise, average the values across raters/sessions
+
+    See also :func:`anatomy_poset.core.aggregation.aggregate_matrices_with_counts` for counts.
     """
-    if not matrices:
-        return []
+    from .aggregation import aggregate_matrices_mean_only
 
-    n = len(matrices[0])
-    W: List[List[float]] = [[0.0 for _ in range(n)] for _ in range(n)]
-    C: List[List[int]] = [[0 for _ in range(n)] for _ in range(n)]
-
-    for M in matrices:
-        if len(M) != n:
-            raise ValueError("All matrices must have the same size.")
-        for i in range(n):
-            if len(M[i]) != n:
-                raise ValueError("All matrices must be square n x n.")
-            for j in range(n):
-                if M[i][j] != -2:
-                    W[i][j] += float(M[i][j])
-                    C[i][j] += 1
-
-    for i in range(n):
-        for j in range(n):
-            if C[i][j] > 0:
-                W[i][j] /= C[i][j]
-
-    return W
+    return aggregate_matrices_mean_only(matrices)
 
 

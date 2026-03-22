@@ -4,10 +4,13 @@ from typing import List, Optional, Set, Tuple
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
     QFileDialog,
     QDialog,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -27,6 +30,11 @@ from ..core.models import (
     AXIS_VERTICAL,
     Structure,
 )
+from ..core.structure_regions import (
+    REGION_IDS,
+    REGION_LABELS,
+    query_allowed_indices_for_regions,
+)
 from .dialogs import (
     AnteroposteriorDefinitionDialog,
     InstructionsDialog,
@@ -42,7 +50,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Anatomical Poset Builder")
         # Initial size; will be clamped to screen geometry below.
-        self.resize(520, 500)
+        self.resize(920, 540)
 
         # Remember optional input path for use during UI setup
         self._input_path: Optional[str] = input_path
@@ -100,7 +108,8 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(view_btn)
         left_layout.addLayout(btn_row)
 
-        # Axis choice: run vertical, lateral, or anteroposterior poset construction
+        # Axis + optional body-region subset (same row)
+        axis_region_row = QHBoxLayout()
         axis_group = QGroupBox("Axis for This Run:")
         axis_layout = QVBoxLayout(axis_group)
         self.axis_vertical_rb = QRadioButton(
@@ -116,7 +125,35 @@ class MainWindow(QMainWindow):
         axis_layout.addWidget(self.axis_vertical_rb)
         axis_layout.addWidget(self.axis_frontal_rb)
         axis_layout.addWidget(self.axis_ap_rb)
-        left_layout.addWidget(axis_group)
+        axis_region_row.addWidget(axis_group, stretch=1)
+
+        region_group = QGroupBox("Structures for This Run:")
+        region_layout = QVBoxLayout(region_group)
+        self._region_all_rb = QRadioButton("All structures in the table")
+        self._region_all_rb.setChecked(True)
+        self._region_subset_rb = QRadioButton("Only selected region(s)")
+        region_mode = QButtonGroup(self)
+        region_mode.addButton(self._region_all_rb)
+        region_mode.addButton(self._region_subset_rb)
+        region_layout.addWidget(self._region_all_rb)
+        region_layout.addWidget(self._region_subset_rb)
+        self._region_checks: dict[str, QCheckBox] = {}
+        for rid in REGION_IDS:
+            cb = QCheckBox(REGION_LABELS[rid])
+            cb.setEnabled(False)
+            self._region_checks[rid] = cb
+            region_layout.addWidget(cb)
+
+        self._region_all_rb.toggled.connect(self._on_region_mode_toggled)
+        self._region_subset_rb.toggled.connect(self._on_region_mode_toggled)
+        region_layout.addWidget(
+            QLabel(
+                "Subset: only pairs within the selected region(s) are asked; "
+                "saved JSON still contains every structure (merge-safe)."
+            )
+        )
+        axis_region_row.addWidget(region_group, stretch=1)
+        left_layout.addLayout(axis_region_row)
 
         self.start_btn = QPushButton("▶  Start Poset Construction")
         self.start_btn.setStyleSheet(
@@ -190,7 +227,7 @@ class MainWindow(QMainWindow):
     def _on_poset_autosave(
         self, axis: str, structures: List[Structure], matrix: List[List[int]]
     ) -> None:
-        """Called by QueryDialog on each answer; updates the correct matrix per axis and saves all axes."""
+        """Called by QueryDialog on autosave (after each answer/undo, on completion, or on close); updates that axis matrix and saves all axes."""
         if not self._autosave_path:
             return
         try:
@@ -345,11 +382,29 @@ class MainWindow(QMainWindow):
 
         return structures
 
+    def _on_region_mode_toggled(self) -> None:
+        use_subset = self._region_subset_rb.isChecked()
+        for cb in self._region_checks.values():
+            cb.setEnabled(use_subset)
+
     # -------- Poset construction flow -------- #
     def start_poset_construction(self) -> None:
         structures = self._collect_structures()
         if structures is None:
             return
+
+        use_all_regions = self._region_all_rb.isChecked()
+        selected_region_ids = {
+            rid for rid, cb in self._region_checks.items() if cb.isChecked()
+        }
+        if not use_all_regions:
+            if not selected_region_ids:
+                QMessageBox.warning(
+                    self,
+                    "No region selected",
+                    "Choose at least one of regions 1–3, or switch back to “All structures”.",
+                )
+                return
 
         if self.axis_vertical_rb.isChecked():
             axis = AXIS_VERTICAL
@@ -357,15 +412,17 @@ class MainWindow(QMainWindow):
             axis = AXIS_MEDIOLATERAL
         else:
             axis = AXIS_ANTERIOR_POSTERIOR
-        # Use MatrixBuilder so tri-valued matrices capture YES/NO/NOT SURE.
-        self.poset_builder = MatrixBuilder(structures, axis=axis)
+
         self.start_btn.setEnabled(False)
 
         # 1) Ask where to save this query's autosave file before starting.
-        # If the user points to an existing poset file, we will update only the
-        # currently selected axis and preserve the others. If they choose a new
-        # path, we create a blank poset file containing all structures and
-        # empty posets for all three axes.
+        # If the user points to an existing poset file, we load it and continue
+        # where it left off (only the current axis matrix is overwritten on save;
+        # other axes stay intact). We show an info dialog after a successful load.
+        # If they choose a new path, we create a blank poset file containing all
+        # structures and empty matrices for all three axes.
+        # (The system file dialog may still ask to "replace" an existing path—that
+        # only confirms the filename; it does not wipe the file before we load it.)
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         suggested = self._autosave_path or self._builtposet_output_path(Path("poset_autosave.json"))
         save_path_str, _ = QFileDialog.getSaveFileName(
@@ -406,11 +463,18 @@ class MainWindow(QMainWindow):
                 # Keep index consistency with the selected output file by using
                 # its structure ordering for continuation.
                 structures = loaded_structures
-                self.poset_builder = MatrixBuilder(structures, axis=axis)
 
                 self._matrix_vertical = Mv
                 self._matrix_mediolateral = Mml
                 self._matrix_anteroposterior = Map
+                QMessageBox.information(
+                    self,
+                    "Continuing from saved file",
+                    "You chose an existing poset file. Nothing in it is discarded: "
+                    "structures and the matrices for the other axes are kept as saved. "
+                    "Only the axis you are about to query will be updated when you save.\n\n"
+                    "The query will pick up where this file left off for that session.",
+                )
             except Exception:
                 QMessageBox.warning(
                     self,
@@ -420,6 +484,27 @@ class MainWindow(QMainWindow):
                 )
                 self.start_btn.setEnabled(True)
                 return
+
+        query_allowed = query_allowed_indices_for_regions(
+            structures,
+            use_all=use_all_regions,
+            selected_region_ids=selected_region_ids,
+        )
+        if query_allowed is not None and len(query_allowed) < 2:
+            QMessageBox.warning(
+                self,
+                "Region subset too small",
+                "The selected region(s) must include at least two structures in your table "
+                "so pairs can be asked. Choose more regions or use “All structures”.",
+            )
+            self.start_btn.setEnabled(True)
+            return
+
+        self.poset_builder = MatrixBuilder(
+            structures,
+            axis=axis,
+            query_allowed_indices=query_allowed,
+        )
 
         # If we have an active MatrixBuilder and preloaded matrices, continue
         # from unfinished state by injecting the selected-axis matrix.
@@ -464,16 +549,8 @@ class MainWindow(QMainWindow):
         query_dialog.showMaximized()
 
     def _open_viewer(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Choose poset file to view",
-            str(OUTPUT_DIR),
-            "JSON Files (*.json);;All Files (*)",
-        )
-        if not path:
-            return
         try:
-            win = PosetViewerWindow(path)
+            win = PosetViewerWindow()
             win.setWindowFlags(Qt.Window)
             self._viewer_windows.append(win)
             win.show()

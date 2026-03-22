@@ -18,4 +18,5 @@ src/anatomy_poset/gui/dialogs.py
 src/anatomy_poset/gui/main_window.py
 src/anatomy_poset/gui/utils.py
 src/anatomy_poset/gui/viewer.py
+tests/test_anatomical_agent.py
 tests/test_builder.py

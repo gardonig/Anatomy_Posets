@@ -5,7 +5,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from PySide6.QtCore import Qt, QRectF, QSize
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QCloseEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -2034,7 +2034,15 @@ class QueryDialog(QDialog):
         super().resizeEvent(event)
         self._clamp_to_current_screen()
 
-    def _autosave_poset(self) -> None:
+    def _autosave_poset(self, seal_lower_triangle: bool = False) -> None:
+        """
+        Persist the poset JSON (autosave after each answer / undo by default).
+
+        When ``seal_lower_triangle`` is True (session complete or window closing), run
+        :meth:`MatrixBuilder.seal_lower_triangle_com_prior` so the file does not keep
+        spurious ``-2`` below the diagonal from partial NO answers. Intermediate saves
+        skip sealing so progress is cheap to write.
+        """
         if not self._autosave_path or not self._save_callback:
             return
         try:
@@ -2042,6 +2050,8 @@ class QueryDialog(QDialog):
             from anatomy_poset.core.builder import MatrixBuilder  # local import to avoid cycles
 
             if isinstance(self.poset_builder, MatrixBuilder):
+                if seal_lower_triangle:
+                    self.poset_builder.seal_lower_triangle_com_prior()
                 structures = self.poset_builder.structures
                 matrix = self.poset_builder.M  # type: ignore[attr-defined]
             else:
@@ -2058,6 +2068,14 @@ class QueryDialog(QDialog):
             self._save_callback(self._axis, structures, matrix)
         except Exception:
             pass
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        """Final save with CoM lower-triangle seal so partial sessions persist cleanly."""
+        try:
+            self._autosave_poset(seal_lower_triangle=True)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _append_feedback_report(
         self,
@@ -2115,7 +2133,7 @@ class QueryDialog(QDialog):
                     self._advance_to_next_query()
                     return
         if pair is None:
-            self._autosave_poset()
+            self._autosave_poset(seal_lower_triangle=True)
             self.query_label.setText(
                 "Thank you for your participation!\n\nEnjoy the pizza 🍕"
             )
@@ -2164,6 +2182,9 @@ class QueryDialog(QDialog):
             f"{name_j}: CoM {axis_label} = {np.round(cj, 1)}"
         )
         self._update_progress()
+        # Progress autosave (no seal — seal on thank-you or window close).
+        if len(self._answer_history) > 0:
+            self._autosave_poset(seal_lower_triangle=False)
 
     def answer_query(self, is_above: Optional[bool]) -> None:
         if self.pending_pair is None:
@@ -2200,7 +2221,6 @@ class QueryDialog(QDialog):
                 self.poset_builder.record_response(i, j, True)
             elif is_above is None:
                 self.poset_builder.record_skip(i, j)
-        self._autosave_poset()
         self._advance_to_next_query()
 
     def go_back_one_question(self) -> None:
@@ -2254,7 +2274,7 @@ class QueryDialog(QDialog):
         if not self._answer_history:
             self.back_btn.setEnabled(False)
         self._update_progress()
-        self._autosave_poset()
+        self._autosave_poset(seal_lower_triangle=False)
 
     def _update_progress(self) -> None:
         asked = len(self._answer_history)
