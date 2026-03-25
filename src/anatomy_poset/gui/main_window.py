@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.builder import PosetBuilder, MatrixBuilder
+from ..core.builder import MatrixBuilder
 from ..core.config import INPUT_DIR, OUTPUT_DIR
 from ..core.io import load_structures_from_json, load_poset_from_json, save_poset_to_json
 from ..core.models import (
@@ -35,14 +35,14 @@ from ..core.structure_regions import (
     REGION_LABELS,
     query_allowed_indices_for_regions,
 )
-from .dialogs import (
+from .definition_dialogs import (
     AnteroposteriorDefinitionDialog,
-    InstructionsDialog,
     MediolateralDefinitionDialog,
-    QueryDialog,
     VerticalDefinitionDialog,
 )
-from .viewer import PosetViewerWindow
+from .query_dialog import QueryDialog
+from .instructions_dialog import InstructionsDialog
+from .poset_viewer import PosetViewer
 
 
 class MainWindow(QMainWindow):
@@ -57,8 +57,8 @@ class MainWindow(QMainWindow):
         # Where to auto-save; set after we know the actual load path in _init_ui
         self._autosave_path: Optional[Path] = OUTPUT_DIR / "poset_autosave.json"
 
-        self.poset_builder: PosetBuilder | None = None
-        self._viewer_windows: List[QWidget] = []
+        self.poset_builder: MatrixBuilder | None = None
+        self._poset_viewer_windows: List[QWidget] = []
         self._edges_vertical: Set[Tuple[int, int]] = set()
         self._edges_mediolateral: Set[Tuple[int, int]] = set()
         self._edges_anteroposterior: Set[Tuple[int, int]] = set()
@@ -100,8 +100,9 @@ class MainWindow(QMainWindow):
         add_row_btn.clicked.connect(self.add_structure_row)
         remove_row_btn = QPushButton("− Remove Selected")
         remove_row_btn.clicked.connect(self.remove_selected_row)
-        view_btn = QPushButton("View Posets")
-        view_btn.clicked.connect(self._open_viewer)
+        view_btn = QPushButton("Poset viewer")
+        view_btn.setToolTip("Open the saved poset inspector (Hasse diagrams, matrices, merge, feedback).")
+        view_btn.clicked.connect(self._open_poset_viewer)
         btn_row.addWidget(load_btn)
         btn_row.addWidget(add_row_btn)
         btn_row.addWidget(remove_row_btn)
@@ -117,10 +118,10 @@ class MainWindow(QMainWindow):
         )
         self.axis_vertical_rb.setChecked(True)
         self.axis_frontal_rb = QRadioButton(
-            'Lateral Axis (Right-Left, Patient\'s View)'
+            'Lateral Axis (Left-Right, Patient\'s View)'
         )
         self.axis_ap_rb = QRadioButton(
-            'Anteroposterior Axis (Back-Front)'
+            'Anteroposterior Axis (Front-Back)'
         )
         axis_layout.addWidget(self.axis_vertical_rb)
         axis_layout.addWidget(self.axis_frontal_rb)
@@ -146,12 +147,6 @@ class MainWindow(QMainWindow):
 
         self._region_all_rb.toggled.connect(self._on_region_mode_toggled)
         self._region_subset_rb.toggled.connect(self._on_region_mode_toggled)
-        region_layout.addWidget(
-            QLabel(
-                "Subset: only pairs within the selected region(s) are asked; "
-                "saved JSON still contains every structure (merge-safe)."
-            )
-        )
         axis_region_row.addWidget(region_group, stretch=1)
         left_layout.addLayout(axis_region_row)
 
@@ -506,19 +501,17 @@ class MainWindow(QMainWindow):
             query_allowed_indices=query_allowed,
         )
 
-        # If we have an active MatrixBuilder and preloaded matrices, continue
-        # from unfinished state by injecting the selected-axis matrix.
-        if isinstance(self.poset_builder, MatrixBuilder):
-            if axis == AXIS_VERTICAL:
-                self.poset_builder.M = [row[:] for row in self._matrix_vertical]
-            elif axis == AXIS_MEDIOLATERAL:
-                self.poset_builder.M = [row[:] for row in self._matrix_mediolateral]
-            else:
-                self.poset_builder.M = [row[:] for row in self._matrix_anteroposterior]
-            self.poset_builder.finished = False
-            self.poset_builder.current_gap = 1
-            self.poset_builder.current_i = 0
-            self.poset_builder._propagate()
+        # Continue from preloaded matrices by injecting the selected-axis matrix.
+        if axis == AXIS_VERTICAL:
+            self.poset_builder.M = [row[:] for row in self._matrix_vertical]
+        elif axis == AXIS_MEDIOLATERAL:
+            self.poset_builder.M = [row[:] for row in self._matrix_mediolateral]
+        else:
+            self.poset_builder.M = [row[:] for row in self._matrix_anteroposterior]
+        self.poset_builder.finished = False
+        self.poset_builder.current_gap = 1
+        self.poset_builder.current_i = 0
+        self.poset_builder._propagate()
 
         # 2) Generic welcome/instructions window (always shown)
         welcome_dialog = InstructionsDialog(axis=axis)
@@ -548,17 +541,17 @@ class MainWindow(QMainWindow):
         # Open the query window maximized to make best use of the display
         query_dialog.showMaximized()
 
-    def _open_viewer(self) -> None:
+    def _open_poset_viewer(self) -> None:
         try:
-            win = PosetViewerWindow()
+            win = PosetViewer()
             win.setWindowFlags(Qt.Window)
-            self._viewer_windows.append(win)
+            self._poset_viewer_windows.append(win)
             win.show()
             win.raise_()
             win.activateWindow()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(
                 self,
-                "Failed to open viewer",
-                f"Could not open viewer:\n{exc}",
+                "Failed to open poset viewer",
+                f"Could not open poset viewer:\n{exc}",
             )

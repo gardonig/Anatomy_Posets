@@ -25,20 +25,20 @@ After **canonical sorting** by CoM on the active axis (descending), **lower tria
 
 ## How the matrix is built (algorithm)
 
-1. **Sort structures** by the chosen axis CoM (descending), matching `MatrixBuilder` / `PosetBuilder`.
+1. **Sort structures** by the chosen axis CoM (descending), matching `MatrixBuilder`.
 2. **Initialize** \(M\): diagonal **−1**, lower triangle **−1**, upper triangle **−2** (plus bilateral / equal-CoM rules as implemented).
 3. **Gap-based queries** (`next_pair`): pairs \((i, j)\) with \(j = i + \text{gap}\) are considered in order of increasing gap (1, 2, …). Pairs already decided (not **−2**), implied by **transitive +1** reachability, or skipped by vertical bilateral symmetry rules are not asked again.
 4. **Optional region subsets**: you can restrict **which pairs are asked** to those whose **both** endpoints lie in selected body-region presets; the **saved JSON still lists every structure** and the same **n×n** matrix size so merges stay compatible.
 5. **After each answer**, **propagation** updates the matrix: transitive **+1** chains, inverse **−1** when a side is **+1**, mirroring for left/right cores on the vertical axis, and **closure of unknowns** where reachability on **+1** edges forces a direction.  
 6. **Saved file** stores three matrices (`matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior`) plus the full **structures** list.
 
-**Hasse diagram (viewer)** shows only **cover edges** derived from **+1** entries (transitive reduction of the strict “above” relation). It does **not** draw “unsure” **0** pairs.
+**Hasse diagram (poset viewer)** shows only **cover edges** derived from **+1** entries (transitive reduction of the strict “above” relation). It does **not** draw “unsure” **0** pairs.
 
 ---
 
 ## Merging multiple raters / sessions
 
-The viewer’s **Merge JSON files…** combines several saved posets that describe the **same** set of anatomical structures.
+The poset viewer’s **Merge JSON files…** combines several saved posets that describe the **same** set of anatomical structures.
 
 1. **Align** non-reference files to the **first** file’s structure order: index \(i\) must refer to the same organ across files. If the JSON order differs, matrices are **permuted** by matching **name + CoM** (within tolerance), or merge fails if sets are incompatible.
 2. **Canonical sort per axis** (vertical / mediolateral / anteroposterior) reorders each rater’s matrix for that axis (CoM descending) and **reseals** the lower triangle to **−1**.
@@ -152,8 +152,8 @@ anatomy_poset/
 │   ├── Input_CoM_structures/    # Input CoM JSONs
 │   └── Output_constructed_posets/  # Saved posets (autosave)
 ├── src/anatomy_poset/
-│   ├── core/                    # Models, IO, PosetBuilder
-│   └── gui/                     # PySide6 GUI (main window, dialogs, viewer)
+│   ├── core/                    # Models, IO, MatrixBuilder
+│   └── gui/                     # PySide6 GUI (main window, dialogs, poset_viewer)
 ├── scripts/                     # Helper scripts (e.g. view_full_body_male.py)
 ├── run.py                       # Quick-start GUI launcher
 └── README.md

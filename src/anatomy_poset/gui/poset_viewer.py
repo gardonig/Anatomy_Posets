@@ -1,4 +1,12 @@
+"""
+Poset viewer GUI: inspect saved poset JSON files. Main class: ``PosetViewer`` (opened from the main
+window). Shows per-axis structure lists, Hasse diagrams, matrix merge, and feedback logs.
+
+Standalone slice/atlas UIs were removed as unused; the expert query flow uses ``FullBodyVolumePanel``
+in ``query_dialog.py`` for NumPy volume browsing.
+"""
 from typing import Dict, List, Optional, Set, Tuple
+import json
 import math
 
 import numpy as np
@@ -21,9 +29,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QFileDialog,
-    QSlider,
-    QComboBox,
     QDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QPlainTextEdit,
+    QHeaderView,
 )
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -48,244 +58,9 @@ from ..core.models import (
     AXIS_VERTICAL,
     Structure,
 )
-from ..core.config import ASSETS_DIR
-from .dialogs import ClickableImageLabel
-
-
-class CoronalSliceViewer(QWidget):
-    """
-    Viewer for coronal image stacks (e.g. Visible Human PNG slices).
-    Lets the user pick a base folder and then browse stacks by region with a slider and arrow buttons.
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Coronal Slice Viewer")
-        self.resize(900, 720)
-
-        self._base_dir: str | None = None
-        self._stacks: Dict[str, List[str]] = {}
-        self._current_region: str | None = None
-        self._current_index: int = 0
-        # Cache loaded pixmaps to keep scrubbing responsive.
-        self._pixmap_cache: Dict[str, QPixmap] = {}
-
-        root = QVBoxLayout(self)
-
-        # Top controls: data folder chooser + region selector
-        top_row = QHBoxLayout()
-        root.addLayout(top_row)
-
-        self._choose_btn = QPushButton("Choose image folder…")
-        self._choose_btn.setToolTip(
-            "Select the folder that contains the subfolders "
-            "e.g. head, thorax, abdomen, pelvis, thighs, legs"
-        )
-        self._choose_btn.clicked.connect(self._select_base_folder)
-        top_row.addWidget(self._choose_btn)
-
-        top_row.addStretch(1)
-
-        self._region_combo = QComboBox()
-        self._region_combo.setEnabled(False)
-        self._region_combo.currentTextChanged.connect(self._on_region_changed)
-        top_row.addWidget(QLabel("Region:"))
-        top_row.addWidget(self._region_combo)
-
-        # Image area
-        self._image_label = ClickableImageLabel("Coronal slice — full view", parent=self)
-        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setStyleSheet(
-            "border: 1px solid #e0e0e0; border-radius: 8px; "
-            "background: #000000; padding: 4px; margin: 8px;"
-        )
-        self._image_label.setMinimumHeight(540)
-        root.addWidget(self._image_label, stretch=1)
-
-        # Navigation controls: left / slider / right
-        nav_row = QHBoxLayout()
-        root.addLayout(nav_row)
-
-        self._prev_btn = QPushButton("◀")
-        self._prev_btn.setFixedWidth(40)
-        self._prev_btn.clicked.connect(self._step_prev)
-        self._prev_btn.setEnabled(False)
-        nav_row.addWidget(self._prev_btn)
-
-        self._slider = QSlider(Qt.Orientation.Horizontal)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(0)
-        self._slider.setSingleStep(1)
-        self._slider.setPageStep(10)
-        self._slider.setEnabled(False)
-        self._slider.valueChanged.connect(self._on_slider_changed)
-        nav_row.addWidget(self._slider, stretch=1)
-
-        self._next_btn = QPushButton("▶")
-        self._next_btn.setFixedWidth(40)
-        self._next_btn.clicked.connect(self._step_next)
-        self._next_btn.setEnabled(False)
-        nav_row.addWidget(self._next_btn)
-
-        self._index_label = QLabel("Slice: – / –")
-        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        nav_row.addWidget(self._index_label)
-
-        # If the assets live inside the repository, offer them as a default base folder.
-        # Prefer assets/visible_human_male, fall back to assets/visible_human.
-        default_base = None
-        vh_male = ASSETS_DIR / "visible_human_male"
-        vh_generic = ASSETS_DIR / "visible_human"
-        if vh_male.exists():
-            default_base = vh_male
-        elif vh_generic.exists():
-            default_base = vh_generic
-
-        if default_base is not None:
-            self._load_base_folder(str(default_base))
-        else:
-            # Otherwise prompt the user the first time
-            self._select_base_folder(initial_prompt=True)
-
-    def _select_base_folder(self, initial_prompt: bool = False) -> None:
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select base folder with coronal image stacks",
-            self._base_dir or str(ASSETS_DIR),
-        )
-        if not folder:
-            if initial_prompt:
-                # Show a gentle hint if the viewer is opened without a valid folder.
-                self._image_label.setText(
-                    "No image folder selected.\n\n"
-                    "Click 'Choose image folder…' to pick the directory that contains\n"
-                    "subfolders such as head, thorax, abdomen, pelvis, thighs, legs."
-                )
-            return
-        self._load_base_folder(folder)
-
-    def _load_base_folder(self, folder: str) -> None:
-        from pathlib import Path
-
-        base = Path(folder)
-        if not base.exists() or not base.is_dir():
-            QMessageBox.warning(
-                self,
-                "Folder not found",
-                f"The selected folder does not exist or is not a directory:\n{folder}",
-            )
-            return
-
-        self._base_dir = folder
-        self._stacks.clear()
-
-        # Discover subfolders with PNG slices (case-insensitive), ignore other files like .txt
-        for sub in sorted(base.iterdir()):
-            if not sub.is_dir():
-                continue
-            pngs = sorted(
-                str(p)
-                for p in sub.iterdir()
-                if p.is_file() and p.suffix.lower() == ".png"
-            )
-            if not pngs:
-                continue
-            self._stacks[sub.name] = pngs
-
-        self._region_combo.blockSignals(True)
-        self._region_combo.clear()
-        for region in sorted(self._stacks.keys()):
-            self._region_combo.addItem(region)
-        self._region_combo.blockSignals(False)
-
-        has_any = bool(self._stacks)
-        self._region_combo.setEnabled(has_any)
-        self._slider.setEnabled(has_any)
-        self._prev_btn.setEnabled(has_any)
-        self._next_btn.setEnabled(has_any)
-
-        if not has_any:
-            self._image_label.setText(
-                "No PNG image stacks were found.\n\n"
-                "The selected folder should contain subfolders (e.g. head, thorax, abdomen, pelvis,\n"
-                "thighs, legs) with .png slices inside each of them."
-            )
-            self._index_label.setText("Slice: – / –")
-            return
-
-        # Select the first region by default
-        first_region = self._region_combo.currentText()
-        if first_region:
-            self._on_region_changed(first_region)
-
-    def _on_region_changed(self, region: str) -> None:
-        if not region or region not in self._stacks:
-            return
-        self._current_region = region
-        self._current_index = 0
-        num_slices = len(self._stacks[region])
-        self._slider.blockSignals(True)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(max(0, num_slices - 1))
-        self._slider.setValue(0)
-        self._slider.blockSignals(False)
-        self._update_image()
-
-    def _on_slider_changed(self, value: int) -> None:
-        self._current_index = int(value)
-        self._update_image()
-
-    def _step_prev(self) -> None:
-        if self._current_region is None:
-            return
-        if self._current_index <= 0:
-            return
-        self._current_index -= 1
-        self._slider.setValue(self._current_index)
-
-    def _step_next(self) -> None:
-        if self._current_region is None:
-            return
-        stack = self._stacks.get(self._current_region, [])
-        if not stack:
-            return
-        if self._current_index >= len(stack) - 1:
-            return
-        self._current_index += 1
-        self._slider.setValue(self._current_index)
-
-    def _update_image(self) -> None:
-        if self._current_region is None:
-            return
-        stack = self._stacks.get(self._current_region, [])
-        if not stack:
-            self._image_label.setText("[No slices found for this region]")
-            self._image_label.setPixmap(QPixmap())
-            self._index_label.setText("Slice: – / –")
-            return
-
-        idx = max(0, min(self._current_index, len(stack) - 1))
-        self._current_index = idx
-        path = stack[idx]
-        # Use cache to avoid re-reading from disk on every slider tick.
-        pix = self._pixmap_cache.get(path)
-        if pix is None:
-            pix = QPixmap(path)
-            if not pix.isNull():
-                if len(self._pixmap_cache) > 1000:
-                    self._pixmap_cache.clear()
-                self._pixmap_cache[path] = pix
-        if pix.isNull():
-            from pathlib import Path as _Path
-
-            self._image_label.setText(f"[Could not load slice: {_Path(path).name}]")
-            self._image_label.setPixmap(QPixmap())
-        else:
-            self._image_label.set_full_pixmap(pix)
-            # Let ClickableImageLabel handle drawing/scaling; just trigger repaint.
-            self._image_label.update()
-        self._index_label.setText(f"Slice: {idx + 1} / {len(stack)}")
-
+# Removed (unused in app): CoronalSliceViewer — PNG coronal stacks; QueryDialog uses
+# FullBodyVolumePanel (query_dialog.py) for NumPy volume slices. StructureViewsWindow and
+# FullBodyVolumeViewer at EOF were also removed (nothing opened them).
 
 class HasseDiagramView(QGraphicsView):
     """
@@ -477,12 +252,12 @@ class HasseDiagramView(QGraphicsView):
         self.fitInView(self._scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
 
-class PosetViewerWindow(QWidget):
-    """View saved poset(s): tabular data + Hasse diagram per axis (Vertical / Mediolateral / Anteroposterior)."""
+class PosetViewer(QWidget):
+    """Saved poset inspector: lists + Hasse diagram per axis (vertical / mediolateral / anteroposterior)."""
 
     def __init__(self, poset_path: Optional[str] = None) -> None:
         super().__init__()
-        self.setWindowTitle("Anatomical Poset Viewer")
+        self.setWindowTitle("Poset viewer")
         self.resize(900, 600)
 
         self._path: str = ""
@@ -514,6 +289,12 @@ class PosetViewerWindow(QWidget):
         )
         self._merge_btn.clicked.connect(self._merge_json_files)
         toolbar.addWidget(self._merge_btn)
+        self._feedback_btn = QPushButton("View Feedback…")
+        self._feedback_btn.setToolTip(
+            "Open and inspect a feedback .jsonl log created during expert queries."
+        )
+        self._feedback_btn.clicked.connect(self._open_feedback_file)
+        toolbar.addWidget(self._feedback_btn)
         self._save_merged_btn = QPushButton("Save merged consensus…")
         self._save_merged_btn.setToolTip(
             "Export consensus tri-valued matrices (majority vote per cell) to one JSON file. "
@@ -551,13 +332,13 @@ class PosetViewerWindow(QWidget):
 
     def _update_title_and_status(self) -> None:
         if self._merged_mode:
-            self.setWindowTitle("Anatomical Poset Viewer — merged")
+            self.setWindowTitle("Poset viewer — merged")
             self._status_label.setText(f"Merged: K = {self._merge_k} file(s)")
         elif self._path:
-            self.setWindowTitle(f"Anatomical Poset Viewer — {Path(self._path).name}")
+            self.setWindowTitle(f"Poset viewer — {Path(self._path).name}")
             self._status_label.setText(str(Path(self._path).resolve()))
         else:
-            self.setWindowTitle("Anatomical Poset Viewer")
+            self.setWindowTitle("Poset viewer")
             self._status_label.setText("No file loaded")
 
     def _open_json_file(self) -> None:
@@ -570,6 +351,116 @@ class PosetViewerWindow(QWidget):
         if not path:
             return
         self._load_from_path(path)
+
+    def _open_feedback_file(self) -> None:
+        start_dir = str(Path(self._path).resolve().parent) if self._path else str(OUTPUT_DIR)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open feedback log",
+            start_dir,
+            "Feedback Logs (*.jsonl);;All Files (*)",
+        )
+        if not path:
+            return
+        self._show_feedback_log(path)
+
+    def _show_feedback_log(self, path: str) -> None:
+        entries: List[Dict[str, str]] = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line_no, raw in enumerate(f, start=1):
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        entries.append(
+                            {
+                                "axis": "",
+                                "answer": "",
+                                "question": f"[Invalid JSON at line {line_no}]",
+                                "feedback": line,
+                            }
+                        )
+                        continue
+                    entries.append(
+                        {
+                            "axis": str(obj.get("axis", "")),
+                            "answer": str(obj.get("answer", "")),
+                            "question": str(obj.get("question", "")),
+                            "feedback": str(obj.get("feedback", "")),
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Open feedback log", f"Could not read:\n{path}\n\n{exc}")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Feedback Log — {Path(path).name}")
+        dlg.resize(1050, 680)
+        dlg.setModal(False)
+        root = QVBoxLayout(dlg)
+
+        info = QLabel(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} from {path}")
+        info.setStyleSheet("color: #555;")
+        root.addWidget(info)
+
+        split = QHBoxLayout()
+        root.addLayout(split, stretch=1)
+
+        table = QTableWidget(len(entries), 4, dlg)
+        table.setHorizontalHeaderLabels(["Axis", "Question", "Answer", "Feedback"])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+
+        def _short(s: str, n: int = 90) -> str:
+            return s if len(s) <= n else s[: n - 1] + "…"
+
+        for i, e in enumerate(entries):
+            table.setItem(i, 0, QTableWidgetItem(e["axis"]))
+            table.setItem(i, 1, QTableWidgetItem(_short(e["question"])))
+            table.setItem(i, 2, QTableWidgetItem(e["answer"]))
+            table.setItem(i, 3, QTableWidgetItem(_short(e["feedback"])))
+
+        detail = QPlainTextEdit(dlg)
+        detail.setReadOnly(True)
+        detail.setPlaceholderText("Select a row to view full question + feedback.")
+
+        def _render_row(row: int) -> None:
+            if row < 0 or row >= len(entries):
+                detail.clear()
+                return
+            e = entries[row]
+            detail.setPlainText(
+                "\n".join(
+                    [
+                        f"Axis: {e['axis']}",
+                        "Question:",
+                        e["question"],
+                        "",
+                        f"Answer: {e['answer']}",
+                        "",
+                        "Feedback:",
+                        e["feedback"],
+                    ]
+                )
+            )
+
+        table.currentCellChanged.connect(lambda cur, *_: _render_row(cur))
+        if entries:
+            table.selectRow(0)
+            _render_row(0)
+
+        split.addWidget(table, stretch=3)
+        split.addWidget(detail, stretch=2)
+        dlg.show()
 
     def _load_from_path(self, path: str) -> None:
         try:
@@ -963,16 +854,6 @@ class PosetViewerWindow(QWidget):
         else:
             labels = [str(i) for i in range(n)]
 
-        ax.set_title(
-            f"{title}\n"
-            "Merge does not propagate across cells — each (i,j) is independent. "
-            "P(yes)=(μ+1)/2 uses only raters who answered that cell (−2 ignored). "
-            "0.25/0.75 needs both raters to answer: e.g. 0 & +1 → μ=0.5 → P=0.75. "
-            "If one rater has unsure (0) and the other −2 here, μ=0 → P=0.5 (not 0.75). "
-            "Many such cells in one row/column can look like a stripe — check "
-            "“answered 1/2” in cell text. Builder gap order still asks 1>4 after 1>3 "
-            "unless inference fills the cell."
-        )
         ax.set_xlabel("j (target structure)")
         ax.set_ylabel("i (source structure)")
         ax.set_xticks(range(n))
@@ -1138,486 +1019,3 @@ class PosetViewerWindow(QWidget):
         ml_matrix_btn.clicked.connect(_ml_matrix)
         ap_matrix_btn.clicked.connect(_ap_matrix)
 
-
-class StructureViewsWindow(QWidget):
-    """
-    Image-based atlas of anatomical structures and standard views.
-    Users can navigate through structures (tabs) and rotations (front / side / rear).
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle("Anatomy Views")
-        self.resize(1000, 720)
-
-        self._tabs = QTabWidget()
-        root = QVBoxLayout(self)
-        root.addWidget(self._tabs)
-
-        # Map structures and rotations to asset filenames
-        self._structure_views: Dict[str, Dict[str, str]] = {
-            "Skeleton": {
-                "Front": "skeleton_front.png",
-                "Side": "skeleton_side.png",
-                "Rear": "skeleton_rear.png",
-            },
-            "Superficial muscles": {
-                "Front": "mm_super_front.png",
-                "Side": "mm_super_side.png",
-                "Rear": "mm_super_rear.png",
-            },
-            "Subcutaneous muscles": {
-                "Front": "mm_sub_front.png",
-                "Side": "mm_sub_side.png",
-                "Rear": "mm_sub_rear.png",
-            },
-            "Gastrointestinal system": {
-                "Front": "gastro_front.png",
-                "Side": "gastro_side.png",
-                "Rear": "gastro_rear.png",
-            },
-            "Urinary / Genital / Respiratory / Endocrine": {
-                "Front": "ur_gen_resp_endocrin_front.png",
-                "Side": "ur_gen_resp_endocrin_side.png",
-                "Rear": "ur_gen_resp_endocrin_rear.png",
-            },
-        }
-
-        for structure_name, views in self._structure_views.items():
-            tab = QWidget()
-            layout = QVBoxLayout(tab)
-
-            heading = QLabel(structure_name)
-            heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            heading.setStyleSheet(
-                "font-size: 18px; font-weight: 600; margin-bottom: 8px; color: #1a1a1a;"
-            )
-            layout.addWidget(heading)
-
-            # View selector buttons
-            btn_row = QHBoxLayout()
-            layout.addLayout(btn_row)
-
-            image_label = ClickableImageLabel(
-                f"{structure_name} — full view", parent=self
-            )
-            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            image_label.setFixedHeight(540)
-            image_label.setStyleSheet(
-                "border: 1px solid #e0e0e0; border-radius: 8px; "
-                "background: #ffffff; padding: 4px; margin: 8px;"
-            )
-            layout.addWidget(image_label)
-
-            def make_handler(view_key: str, label: ClickableImageLabel) -> None:
-                def _handler() -> None:
-                    filename = views.get(view_key)
-                    if not filename:
-                        label.setText(f"[No {view_key.lower()} view image available]")
-                        label.setPixmap(QPixmap())
-                        return
-                    path = ASSETS_DIR / "images" / filename
-                    if not path.exists():
-                        label.setText(f"[Missing image: {filename}]")
-                        label.setPixmap(QPixmap())
-                        return
-                    pix = QPixmap(str(path))
-                    if pix.isNull():
-                        label.setText(f"[Could not load image: {filename}]")
-                        label.setPixmap(QPixmap())
-                        return
-                    label.set_full_pixmap(pix)
-                    label.setPixmap(
-                        pix.scaledToHeight(540, Qt.SmoothTransformation)
-                    )
-
-                return _handler
-
-            # Create buttons in an intuitive left-to-right order
-            buttons: Dict[str, QPushButton] = {}
-            for view_key in ("Front", "Side", "Rear"):
-                btn = QPushButton(view_key)
-                btn.setCheckable(True)
-                btn.setStyleSheet(
-                    """
-                    QPushButton {
-                        padding: 6px 16px;
-                        border-radius: 6px;
-                        border: 1px solid #d0d0d0;
-                        background-color: #f5f5f5;
-                    }
-                    QPushButton:hover {
-                        background-color: #eaeaea;
-                    }
-                    QPushButton:checked {
-                        background-color: #007aff;
-                        color: white;
-                        border-color: #0051d5;
-                    }
-                    """
-                )
-
-                def on_clicked(checked: bool, key: str = view_key) -> None:  # type: ignore[override]
-                    if not checked:
-                        # Keep one view active; ignore unchecking
-                        btn.setChecked(True)
-                        return
-                    for other_key, other_btn in buttons.items():
-                        if other_key != key:
-                            other_btn.setChecked(False)
-                    make_handler(key, image_label)()
-
-                btn.clicked.connect(on_clicked)
-                buttons[view_key] = btn
-                btn_row.addWidget(btn)
-
-            btn_row.addStretch(1)
-
-            # Load default view (Front) on startup
-            default_view = "Front" if "Front" in views else next(iter(views))
-            if default_view in buttons:
-                buttons[default_view].setChecked(True)
-                make_handler(default_view, image_label)()
-
-            self._tabs.addTab(tab, structure_name)
-
-        # Slice/volume viewer entry points
-        bottom_row = QHBoxLayout()
-        root.addLayout(bottom_row)
-        bottom_row.addStretch(1)
-
-        open_coronal_btn = QPushButton("Open coronal slice viewer…")
-        open_coronal_btn.setToolTip(
-            "Browse coronal image stacks (e.g. Visible Human) with a slider and arrow keys."
-        )
-
-        def _open_coronal_viewer() -> None:
-            viewer = CoronalSliceViewer(self)
-            viewer.show()
-
-        open_coronal_btn.clicked.connect(_open_coronal_viewer)
-        bottom_row.addWidget(open_coronal_btn)
-
-        open_volume_btn = QPushButton("Open full-body volume viewer…")
-        open_volume_btn.setToolTip(
-            "Browse the downsampled full-body volume from a NumPy tensor with axial/coronal/sagittal views."
-        )
-
-        def _open_volume_viewer() -> None:
-            viewer = FullBodyVolumeViewer(self)
-            viewer.show()
-
-        open_volume_btn.clicked.connect(_open_volume_viewer)
-        bottom_row.addWidget(open_volume_btn)
-
-        bottom_row.addStretch(1)
-
-
-class FullBodyVolumeViewer(QWidget):
-    """
-    Viewer for the downsampled full-body volume stored as a NumPy tensor.
-    Lets the user pick a .npy file and browse axial / coronal / sagittal slices with a slider.
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Full-body Slice Viewer")
-        self.resize(900, 720)
-
-        self._volume: np.ndarray | None = None  # shape (Z, Y, X), float32 [0, 1]
-        self._plane: str = "axial"  # axial / coronal / sagittal
-        self._index: int = 0
-
-        root = QVBoxLayout(self)
-
-        # Top row: choose tensor file + plane selector
-        top_row = QHBoxLayout()
-        root.addLayout(top_row)
-
-        self._load_btn = QPushButton("Choose volume (.npy)…")
-        self._load_btn.setToolTip(
-            "Select a NumPy tensor file containing the full-body volume "
-            "(e.g. full_body_tensor.npy)."
-        )
-        self._load_btn.clicked.connect(self._select_tensor_file)
-        top_row.addWidget(self._load_btn)
-
-        top_row.addStretch(1)
-
-        self._plane_buttons: Dict[str, QPushButton] = {}
-        plane_row = QHBoxLayout()
-        top_row.addLayout(plane_row)
-
-        def _make_plane_button(label: str, key: str) -> QPushButton:
-            btn = QPushButton(label)
-            btn.setCheckable(True)
-            btn.setStyleSheet(
-                """
-                QPushButton {
-                    padding: 4px 12px;
-                    border-radius: 4px;
-                    border: 1px solid #c0c0c5;
-                    background: #f2f2f7;
-                    color: #1a1a1a;
-                }
-                QPushButton:hover {
-                    background: #e0e0ea;
-                }
-                QPushButton:checked {
-                    background: #007aff;
-                    color: white;
-                    border-color: #0051d5;
-                }
-                """
-            )
-
-            def on_clicked(checked: bool, k: str = key) -> None:  # type: ignore[override]
-                if not checked:
-                    # keep one plane active; ignore unchecking
-                    btn.setChecked(True)
-                    return
-                for other_key, other_btn in self._plane_buttons.items():
-                    if other_key != k:
-                        other_btn.setChecked(False)
-                self._plane = k
-                self._reset_slider_for_plane()
-                self._update_image()
-
-            btn.clicked.connect(on_clicked)
-            return btn
-
-        for label, key in (("Axial", "axial"), ("Coronal", "coronal"), ("Sagittal", "sagittal")):
-            b = _make_plane_button(label, key)
-            self._plane_buttons[key] = b
-            plane_row.addWidget(b)
-
-        # Default plane
-        self._plane_buttons["axial"].setChecked(True)
-
-        # Image area
-        self._image_label = ClickableImageLabel("Full-body slice — full view", parent=self)
-        self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setStyleSheet(
-            "border: 1px solid #e0e0e0; border-radius: 8px; "
-            "background: #000000; padding: 4px; margin: 8px;"
-        )
-        self._image_label.setMinimumHeight(540)
-        root.addWidget(self._image_label, stretch=1)
-
-        # Navigation controls
-        nav_row = QHBoxLayout()
-        root.addLayout(nav_row)
-
-        self._prev_btn = QPushButton("◀")
-        self._prev_btn.setFixedWidth(40)
-        self._prev_btn.clicked.connect(self._step_prev)
-        self._prev_btn.setEnabled(False)
-        nav_row.addWidget(self._prev_btn)
-
-        self._slider = QSlider(Qt.Orientation.Horizontal)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(0)
-        self._slider.setSingleStep(1)
-        self._slider.setPageStep(10)
-        self._slider.setEnabled(False)
-        self._slider.valueChanged.connect(self._on_slider_changed)
-        nav_row.addWidget(self._slider, stretch=1)
-
-        self._next_btn = QPushButton("▶")
-        self._next_btn.setFixedWidth(40)
-        self._next_btn.clicked.connect(self._step_next)
-        self._next_btn.setEnabled(False)
-        nav_row.addWidget(self._next_btn)
-
-        self._index_label = QLabel("Slice: – / –")
-        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        nav_row.addWidget(self._index_label)
-
-        # Try to auto-load a default tensor near the repository root or assets dir.
-        self._try_auto_load_tensor()
-
-    # ---- Tensor loading ----
-    def _select_tensor_file(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
-
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select NumPy volume file",
-            str(Path.cwd()),
-            "NumPy files (*.npy *.npz);;All files (*)",
-        )
-        if not path:
-            return
-        self._load_tensor(Path(path))
-
-    def _try_auto_load_tensor(self) -> None:
-        candidates = []
-        # 1) assets/visible_human_tensors (prefer RGB tensor, fall back to grayscale)
-        vh_dir = ASSETS_DIR / "visible_human_tensors"
-        candidates.append(vh_dir / "full_body_tensor_rgb.npy")
-        candidates.append(vh_dir / "full_body_tensor.npy")
-        # 2) repository root (three levels above this file)
-        try:
-            repo_root = Path(__file__).resolve().parents[3]
-            candidates.append(repo_root / "full_body_tensor_rgb.npy")
-            candidates.append(repo_root / "full_body_tensor.npy")
-        except Exception:
-            pass
-
-        for p in candidates:
-            if p.exists():
-                self._load_tensor(p)
-                return
-
-        self._image_label.setText(
-            "Full-body volume viewer\n\n"
-            "Click 'Choose volume (.npy)…' to load a NumPy tensor created from the "
-            "downsampled full-body slices."
-        )
-
-    def _load_tensor(self, path: Path) -> None:
-        try:
-            arr = np.load(str(path))
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(
-                self,
-                "Failed to load volume",
-                f"Could not load NumPy array from:\n{path}\n\n{exc}",
-            )
-            return
-
-        if arr.ndim not in (3, 4):
-            QMessageBox.warning(
-                self,
-                "Invalid volume",
-                f"Expected a 3D or 4D RGB array, got shape {arr.shape!r}.",
-            )
-            return
-
-        self._volume = arr.astype(np.float32, copy=False)
-        z_dim = self._volume.shape[0]
-        self._index = z_dim // 2
-
-        self._slider.setEnabled(True)
-        self._prev_btn.setEnabled(True)
-        self._next_btn.setEnabled(True)
-        self._reset_slider_for_plane()
-        self._update_image()
-
-    # ---- Navigation ----
-    def _reset_slider_for_plane(self) -> None:
-        if self._volume is None:
-            return
-        if self._volume.ndim == 4:
-            z_dim, y_dim, x_dim, _ = self._volume.shape
-        else:
-            z_dim, y_dim, x_dim = self._volume.shape
-        if self._plane == "axial":
-            min_idx, max_idx = 0, max(0, z_dim - 1)
-        elif self._plane == "coronal":
-            min_idx, max_idx = 0, max(0, y_dim - 1)
-        else:  # sagittal
-            min_idx, max_idx = 0, max(0, x_dim - 1)
-
-        self._index = max(min_idx, min(self._index, max_idx))
-
-        self._slider.blockSignals(True)
-        self._slider.setMinimum(min_idx)
-        self._slider.setMaximum(max_idx)
-        self._slider.setValue(self._index)
-        self._slider.blockSignals(False)
-
-    def _on_slider_changed(self, value: int) -> None:
-        self._index = int(value)
-        self._update_image()
-
-    def _step_prev(self) -> None:
-        if self._volume is None:
-            return
-        if self._index <= self._slider.minimum():
-            return
-        self._index -= 1
-        self._slider.setValue(self._index)
-
-    def _step_next(self) -> None:
-        if self._volume is None:
-            return
-        if self._index >= self._slider.maximum():
-            return
-        self._index += 1
-        self._slider.setValue(self._index)
-
-    # ---- Rendering ----
-    def _current_slice_array(self) -> np.ndarray | None:
-        if self._volume is None:
-            return None
-        if self._volume.ndim == 4:
-            z_dim, y_dim, x_dim, _ = self._volume.shape
-        else:
-            z_dim, y_dim, x_dim = self._volume.shape
-        idx = int(max(self._slider.minimum(), min(self._index, self._slider.maximum())))
-
-        if self._plane == "axial":
-            # (Y, X) or (Y, X, 3)
-            sl = self._volume[idx, ...]
-            # Rotate 180° in-plane
-            sl = np.rot90(sl, 2, axes=(0, 1))
-            return sl
-
-        if self._plane == "coronal":
-            # (Z, X) or (Z, X, 3)
-            sl = self._volume[:, idx, ...]
-            # No additional rotation; show as-sliced (after cropping).
-            return sl
-
-        # Sagittal
-        sl = self._volume[:, :, idx, ...] if self._volume.ndim == 4 else self._volume[:, :, idx]
-        # No additional rotation; show as-sliced (after cropping).
-        return sl
-
-    def _update_image(self) -> None:
-        sl = self._current_slice_array()
-        if sl is None:
-            self._image_label.setText("[No volume loaded]")
-            self._image_label.setPixmap(QPixmap())
-            self._index_label.setText("Slice: – / –")
-            return
-
-        # Normalize to [0, 255] uint8 for display
-        sl = np.nan_to_num(sl, nan=0.0, posinf=0.0, neginf=0.0)
-        vmin = float(sl.min())
-        vmax = float(sl.max())
-        if vmax > vmin:
-            sl_norm = (sl - vmin) / (vmax - vmin)
-        else:
-            sl_norm = np.zeros_like(sl, dtype=np.float32)
-        img8 = (sl_norm * 255.0).clip(0, 255).astype(np.uint8)
-        if img8.ndim == 2:
-            h, w = img8.shape
-            rgb = np.stack([img8, img8, img8], axis=-1)
-        else:
-            h, w, _ = img8.shape
-            rgb = img8
-        rgb = np.ascontiguousarray(rgb)
-
-        qimg = QImage(
-            rgb.data,
-            w,
-            h,
-            3 * w,
-            QImage.Format.Format_RGB888,
-        )
-        pix = QPixmap.fromImage(qimg)
-        self._image_label.set_full_pixmap(pix)
-        target_h = self._image_label.height() or 540
-        self._image_label.setPixmap(
-            pix.scaledToHeight(
-                target_h,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-
-        max_idx = self._slider.maximum()
-        self._index_label.setText(
-            f"{self._plane.capitalize()} slice: {self._index + 1} / {max_idx + 1}"
-        )

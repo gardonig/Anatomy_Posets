@@ -121,7 +121,7 @@ REGION_IDS: tuple[str, str, str] = (
 
 REGION_LABELS: Dict[str, str] = {
     "1_trunk_viscera_no_arms": "1 — Trunk and viscera (thorax/abdomen/pelvic organs, vessels; no arms)",
-    "2_neuroaxis_shoulder_arms": "2 — Brain, spine & arms (humeri)",
+    "2_neuroaxis_shoulder_arms": "2 — Brain, spine and arms",
     "3_lumbopelvis_legs": "3 — Sacrum, pelvis, hips and legs",
 }
 

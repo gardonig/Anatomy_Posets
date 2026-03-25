@@ -192,7 +192,7 @@ def reindex_matrix_to_structure_order(
 
 def canonical_sort_permutation_for_axis(structures: List[Structure], axis: str) -> List[int]:
     """
-    Indices sorted by the chosen axis CoM descending, matching :class:`PosetBuilder`.
+    Indices sorted by the chosen axis CoM descending, matching :class:`MatrixBuilder`.
 
     Uses stable sort on ``enumerate`` so tie-breaking matches the builder (preserve
     relative order among equal CoMs on that axis).

@@ -1,3 +1,7 @@
+# Local scripts
+
+Helper and one-off scripts live here. This folder is **tracked in git** (not gitignored), so useful tooling and reproducible utilities in `scripts/` should be committed with the project.
+
 # Examples
 
 ## Algorithm 1 matrix walkthrough (`algorithm1_matrix_walkthrough.py`)

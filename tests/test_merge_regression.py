@@ -1,7 +1,7 @@
 """
 Regression: merged consensus from test5 + test6 matches saved merged_consensus_5_6.json.
 
-Also documents per-cell checks (same pipeline as the viewer merge).
+Also documents per-cell checks (same pipeline as the poset viewer merge).
 """
 
 from __future__ import annotations

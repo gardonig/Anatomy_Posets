@@ -1,14 +1,12 @@
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from PySide6.QtCore import Qt, QRectF, QSize
-from PySide6.QtGui import QColor, QCloseEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap, QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -19,15 +17,14 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
     QWidget,
-    QSlider,
 )
 
 from ..core.builder import (
-    PosetBuilder,
     MatrixBuilder,
     _parse_bilateral_core as parse_bilateral_core,
 )
@@ -38,6 +35,7 @@ from ..core.models import (
     AXIS_VERTICAL,
     Structure,
 )
+from .dialog_widgets import ClickableImageLabel
 from .utils import _is_plural_structure, _relation_verb
 
 # Map structure names to view (Front/Side/Rear) -> filename
@@ -177,283 +175,6 @@ def _create_anatomy_views_panel(parent: QDialog) -> QWidget:
     ca_note.setStyleSheet("color: #666666; font-size: 11px; margin-top: 2px;")
     layout.addWidget(ca_note)
     return panel
-
-
-class ImagePreviewDialog(QDialog):
-    """
-    Simple full-window image preview dialog used when the user clicks an image.
-    """
-
-    def __init__(self, pixmap: QPixmap, title: str | None = None, parent: QDialog | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(title or "Image preview")
-        self.setModal(True)
-        layout = QVBoxLayout(self)
-
-        label = ClickableImageLabel(preview_title=title or "Image preview", parent=self)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Full-screen preview should be zoomable/pannable but must not open itself again.
-        label.enable_interactive_view(True)
-        # In preview mode we want to fit as large as possible.
-        label.set_fit_scale(1.0)
-        label.set_preview_click_enabled(False)
-        label.set_full_pixmap(pixmap)
-        layout.addWidget(label)
-
-        # Choose an initial window size that fits on screen.
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            max_w = int(avail.width() * 0.9)
-            max_h = int(avail.height() * 0.9)
-        else:
-            max_w = pixmap.width()
-            max_h = pixmap.height()
-
-        close_btn = QPushButton("Close")
-        close_btn.setFixedWidth(120)
-        close_btn.setStyleSheet(
-            "QPushButton { margin-top: 8px; padding: 6px 16px; border-radius: 6px; "
-            "border: 1px solid #c0c0c5; background: #f2f2f7; color: #1a1a1a; }"
-            "QPushButton:hover { background: #e0e0ea; } QPushButton:pressed { background: #d0d0dd; }"
-        )
-        close_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        btn_row.addWidget(close_btn)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
-
-        target_w = min(pixmap.width(), max_w)
-        target_h = min(pixmap.height(), max_h)
-        self.resize(target_w + 40, target_h + 80)
-
-
-IMG_STYLE_DEFAULT = "margin-top: 6px; background: #ffffff;"
-PLACEHOLDER_STYLE_DEFAULT = (
-    "margin-top: 6px; color: #444; font-size: 13px; background: #ffffff;"
-)
-
-
-def _configure_definition_image_label(
-    label: "ClickableImageLabel",
-    img_path: Path,
-    target_height: int,
-    placeholder_text: str,
-) -> None:
-    """Helper to load a definition/example image into a ClickableImageLabel."""
-    label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-    # Make definition images large by default, but still shrinkable by layouts.
-    label.set_preferred_size(1200, target_height)
-    if img_path.exists():
-        pix = QPixmap(str(img_path))
-        if not pix.isNull():
-            label.set_full_pixmap(pix)
-            label.setPixmap(
-                pix.scaledToHeight(target_height, Qt.SmoothTransformation)
-            )
-            return
-    # Fallback if missing or invalid.
-    label.setText(placeholder_text)
-    label.setStyleSheet(PLACEHOLDER_STYLE_DEFAULT)
-
-
-class ClickableImageLabel(QLabel):
-    """
-    QLabel that opens its pixmap in a full-window preview when clicked.
-    Shows "Click to enlarge" overlay on hover.
-    """
-
-    def __init__(self, preview_title: str | None = None, parent: QDialog | None = None) -> None:
-        super().__init__(parent)
-        self._preview_title = preview_title or "Image preview"
-        self._full_pixmap: QPixmap | None = None
-        self._preferred_size: QSize | None = None
-        self._hovered = False
-        # Slightly shrink the fitted image so it never touches the border/padding.
-        self._fit_scale: float = 0.94
-        # Interactive zoom/pan is optional and disabled by default for embedded images.
-        self._interactive: bool = False
-        # Whether clicking should open a separate preview dialog.
-        self._allow_preview_click: bool = True
-        self._zoom: float = 1.0
-        self._offset_x: float = 0.0
-        self._offset_y: float = 0.0
-        self._panning: bool = False
-        self._last_pos = None
-        self._dragged = False
-        self.setMouseTracking(True)
-
-        # Important: QLabel's default sizeHint is based on the pixmap size.
-        # For very tall slices (e.g. sagittal), this can make layouts expand the
-        # window unexpectedly. We override size hints below to keep the label
-        # responsive to the available layout space instead of the pixmap dimensions.
-
-    def set_preferred_size(self, w: int, h: int) -> None:
-        self._preferred_size = QSize(max(0, int(w)), max(0, int(h)))
-        self.updateGeometry()
-
-    def sizeHint(self) -> QSize:  # type: ignore[override]
-        # A modest, stable preferred size. The label will still expand to fill
-        # available space due to its size policy.
-        return self._preferred_size or QSize(320, 320)
-
-    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
-        # Allow shrinking as much as the layout requires.
-        return QSize(0, 0)
-
-    def set_full_pixmap(self, pixmap: QPixmap) -> None:
-        """Store the original-resolution pixmap for high-quality preview."""
-        self._full_pixmap = pixmap
-        self._zoom = 1.0
-        self._offset_x = 0.0
-        self._offset_y = 0.0
-
-    def set_fit_scale(self, scale: float) -> None:
-        """Controls how large the fitted image appears inside the label (1.0 = max fit)."""
-        self._fit_scale = max(0.2, min(float(scale), 1.0))
-        self.update()
-
-    def enable_interactive_view(self, enabled: bool = True) -> None:
-        """Enable or disable scroll-to-zoom and drag-to-pan for this label."""
-        self._interactive = enabled
-        self._zoom = 1.0
-        self._offset_x = 0.0
-        self._offset_y = 0.0
-
-    def set_preview_click_enabled(self, enabled: bool = True) -> None:
-        """Enable or disable opening a new preview dialog when clicked."""
-        self._allow_preview_click = enabled
-
-    def enterEvent(self, event) -> None:  # type: ignore[override]
-        self._hovered = True
-        self.update()
-
-    def leaveEvent(self, event) -> None:  # type: ignore[override]
-        self._hovered = False
-        self.update()
-
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-
-        base = self._full_pixmap or self.pixmap()
-        if base is not None and not base.isNull():
-            w = base.width()
-            h = base.height()
-            if w > 0 and h > 0:
-                # Compute a base scale that fits the full image into the label,
-                # then apply interactive zoom on top.
-                rect = self.rect()
-                sx = rect.width() / w
-                sy = rect.height() / h
-                base_scale = min(sx, sy) * self._fit_scale
-                scale = base_scale * self._zoom
-
-                target_w = w * scale
-                target_h = h * scale
-
-                # Clamp offsets so the image cannot be dragged outside the label.
-                cx_center = rect.center().x()
-                cy_center = rect.center().y()
-                max_dx = max(0.0, (target_w - rect.width()) / 2.0)
-                max_dy = max(0.0, (target_h - rect.height()) / 2.0)
-                dx = max(-max_dx, min(self._offset_x, max_dx))
-                dy = max(-max_dy, min(self._offset_y, max_dy))
-                cx = cx_center + dx
-                cy = cy_center + dy
-
-                target_rect = QRectF(
-                    cx - target_w / 2.0,
-                    cy - target_h / 2.0,
-                    target_w,
-                    target_h,
-                )
-                painter.drawPixmap(target_rect, base, QRectF(0, 0, w, h))
-
-        # Hover hint overlay
-        if self._hovered and base is not None and not base.isNull():
-            font = self.font()
-            font.setPointSize(max(10, font.pointSize() + 1))
-            painter.setFont(font)
-            text = "Click to enlarge"
-            fm = painter.fontMetrics()
-            tw, th = fm.horizontalAdvance(text), fm.height()
-            x, y = (self.rect().width() - tw) // 2, (self.rect().height() - th) // 2
-            painter.setPen(QColor(0, 0, 0, 80))
-            painter.drawText(x + 1, y + 1, text)
-            painter.setPen(QColor(255, 255, 255, 220))
-            painter.drawText(x, y, text)
-
-        painter.end()
-
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        # Right- or middle-button drag: pan the zoomed image when interactive.
-        if self._interactive and event.button() in (
-            Qt.MouseButton.RightButton,
-            Qt.MouseButton.MiddleButton,
-        ):
-            base = self._full_pixmap or self.pixmap()
-            if base is not None and not base.isNull():
-                self._panning = True
-                self._dragged = False
-                self._last_pos = event.position()
-                self.setCursor(Qt.CursorShape.ClosedHandCursor)
-                event.accept()
-                return
-
-        # Simple left-click opens the preview dialog.
-        if event.button() == Qt.MouseButton.LeftButton and self._allow_preview_click:
-            base = self._full_pixmap or self.pixmap()
-            if base is None:
-                return
-            dlg = ImagePreviewDialog(base, self._preview_title, self.window())
-            dlg.exec()
-        else:
-            super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
-        if self._interactive and self._panning and self._last_pos is not None:
-            delta = event.position() - self._last_pos
-            self._last_pos = event.position()
-            self._offset_x += delta.x()
-            self._offset_y += delta.y()
-            self._dragged = True
-            self.update()
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
-        if self._interactive and self._panning and event.button() in (
-            Qt.MouseButton.RightButton,
-            Qt.MouseButton.MiddleButton,
-        ):
-            self._panning = False
-            self._last_pos = None
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def wheelEvent(self, event) -> None:  # type: ignore[override]
-        if not self._interactive:
-            # Default QLabel behaviour when interactive zoom is disabled.
-            super().wheelEvent(event)
-            return
-        base = self._full_pixmap or self.pixmap()
-        if base is None or base.isNull():
-            super().wheelEvent(event)
-            return
-        delta = event.angleDelta().y()
-        if delta == 0:
-            return
-        factor = 1.15 if delta > 0 else 1 / 1.15
-        self._zoom *= factor
-        # Clamp zoom to a reasonable range
-        self._zoom = max(0.2, min(self._zoom, 10.0))
-        self.update()
 
 
 class SliceLocationWidget(QWidget):
@@ -780,12 +501,19 @@ class FullBodyVolumePanel(QWidget):
             pass
 
         for p in candidates:
-            if p.exists():
+            if not p.exists():
+                continue
+            # Never block dialog startup if a default tensor is missing/corrupt.
+            try:
                 self._load_tensor(p)
+            except Exception:
+                continue
+            if self._volume is not None:
                 return
 
         self._image_label.setText(
             "Full-body volume viewer\n\n"
+            "Default tensor not found at assets/visible_human_tensors/full_body_tensor_rgb.npy.\n\n"
             "Click 'Choose volume (.npy)…' to load a NumPy tensor created from the\n"
             "downsampled full-body slices."
         )
@@ -1006,668 +734,6 @@ class FullBodyVolumePanel(QWidget):
             f"{self._plane.capitalize()} slice: {self._index + 1} / {max_idx + 1}"
         )
 
-class InstructionsDialog(QDialog):
-    """
-    Shown before the query window. Displays the instructions (and examples for vertical).
-    User presses "Proceed" to proceed to questions.
-    """
-
-    def __init__(self, axis: str = AXIS_VERTICAL) -> None:
-        super().__init__()
-        self.setWindowTitle("Instructions — Poset Construction")
-        # Use a slightly larger window than the definition dialogs so the image
-        # has more room, but still clamp to the available screen geometry.
-        self.resize(1200, 800)
-        self.setModal(True)
-        self._axis = axis
-        self.setStyleSheet("background-color: #ffffff;")
-
-        layout = QVBoxLayout(self)
-
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geom = screen.availableGeometry()
-            w = min(self.width(), geom.width())
-            h = min(self.height(), geom.height())
-            self.resize(w, h)
-            self.setMaximumSize(geom.width(), geom.height())
-
-        # Image height preference: keep it large by default (still shrinkable with window)
-        _win_h = self.height()
-        _anatomy_img_height = max(960, 3 * (_win_h - 140))
-
-        # All text: dark on white (no grey backgrounds)
-        _text_style = "color: #1a1a1a; font-size: 14px; padding: 6px 0;"
-
-        # ---- 1. Welcome + anatomical position (side-by-side) ----
-        welcome_heading = QLabel("Welcome to the Anatomical Structure Questionnaire")
-        welcome_heading.setStyleSheet("color: #1a1a1a; font-weight: bold; font-size: 18px; padding: 0 0 12px 0;")
-        layout.addWidget(welcome_heading)
-
-        intro_text = (
-            "Thank you for taking part. In this questionnaire you will be asked to compare pairs of "
-            "anatomical structures and indicate whether one is strictly above the other (vertical axis), "
-            "strictly to the left of the other (lateral axis) or strictly in front of the other (anteroposterior axis). Your answers help us build a spatial ordering for segmentation models "
-            "that can be used to check and correct automatic segmentations. There are no wrong answers—we need "
-            "your clinical judgement.\n\n"
-            "We assume the patient is in standard anatomical position, as shown in the figure.\n\n"
-            "You can click any image to open a larger view. Inside any image, use the mouse wheel to zoom "
-            "and hold the right mouse button to drag (pan) while zoomed.\n\n"
-            "If you have any questions, please do not hesitate to reach out to Gian or Güney."
-        )
-        intro_label = QLabel(intro_text)
-        intro_label.setWordWrap(True)
-        intro_label.setStyleSheet(_text_style)
-        intro_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-
-        anatomy_img = ClickableImageLabel("Anatomical axes — full view")
-        anatomy_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Enable in-dialog zoom (mouse wheel) and panning (left-drag) for this image.
-        anatomy_img.enable_interactive_view(True)
-        # Tighten the in-label fit so we don't get visible "extra border" space.
-        anatomy_img.set_fit_scale(1.0)
-        anatomy_img.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # Use a wider preferred width so the label doesn't get squashed horizontally.
-        anatomy_img.set_preferred_size(int(self.width() * 0.75), _anatomy_img_height)
-        
-        # Use updated example figure for anatomical axes.
-        anatomy_path = ASSETS_DIR / "definition_images" / "Axes_example.png"
-        
-        if anatomy_path.exists():
-            anatomy_pix = QPixmap(str(anatomy_path))
-            if not anatomy_pix.isNull():
-                anatomy_img.set_full_pixmap(anatomy_pix)
-                anatomy_img.setPixmap(
-                    anatomy_pix.scaledToHeight(_anatomy_img_height, Qt.SmoothTransformation)
-                )
-        if anatomy_img.pixmap() is None or anatomy_img.pixmap().isNull():
-            anatomy_img.setText("[Anatomical position diagram missing]")
-        
-        # Put text and image side-by-side, with content aligned to the top
-        intro_row = QHBoxLayout()
-        # Give the image more horizontal room so it can render at full width.
-        intro_row.addWidget(intro_label, stretch=1)
-        intro_row.addWidget(anatomy_img, stretch=5)
-        intro_row.setAlignment(intro_label, Qt.AlignmentFlag.AlignTop)
-        intro_row.setAlignment(anatomy_img, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(intro_row)
-
-        # Proceed button + image source note in a bottom bar
-        button_box = QFrame()
-        button_box.setStyleSheet(
-            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 16px; padding-top: 8px; }"
-        )
-        button_layout = QHBoxLayout(button_box)
-
-        anatomy_ref = QLabel("Images in this window are captured from Complete Anatomy.")
-        anatomy_ref.setWordWrap(True)
-        anatomy_ref.setStyleSheet("color: #555; font-size: 10px; margin-top: 2px;")
-        button_layout.addWidget(anatomy_ref)
-
-        button_layout.addStretch(1)
-        proceed_btn = QPushButton("Proceed")
-        proceed_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #007aff; color: white; border: none; border-radius: 8px;
-                padding: 12px 24px; font-size: 15px;
-            }
-            QPushButton:hover { background-color: #5ac8fa; }
-            QPushButton:pressed { background-color: #0051d5; }
-            """
-        )
-        proceed_btn.clicked.connect(self.accept)
-        button_layout.addWidget(proceed_btn)
-        layout.addWidget(button_box)
-
-
-class VerticalDefinitionDialog(QDialog):
-    """
-    Dedicated window for the vertical 'strictly above' definition and examples.
-    Shown only when the vertical axis is selected; user presses 'Proceed' to start questions.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle('Definition — Vertical "strictly above"')
-        self.resize(1200, 800)
-        self.setModal(True)
-        self.setStyleSheet("background-color: #ffffff;")
-
-        main = QVBoxLayout(self)
-
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geom = screen.availableGeometry()
-            w = min(self.width(), geom.width())
-            h = min(self.height(), geom.height())
-            self.resize(w, h)
-            self.setMaximumSize(geom.width(), geom.height())
-        content = QHBoxLayout()
-        main.addLayout(content)
-
-        _text_style = "color: #1a1a1a; font-size: 14px; padding: 4px 0;"
-        _heading_style = "color: #1a1a1a; font-weight: bold; font-size: 16px; padding: 4px 0 4px 0;"
-
-        # Left column: text (task, definition, question form)
-        left_col = QVBoxLayout()
-        content.addLayout(left_col, stretch=2)
-
-        heading = QLabel('Vertical relation: "strictly above"')
-        heading.setStyleSheet(_heading_style)
-        left_col.addWidget(heading)
-
-        text1 = QLabel(
-            'For each pair of structures you will answer "Yes" or "No" to:\n'
-            '  "Is the first structure strictly above the second along the vertical axis?"'
-        )
-        text1.setWordWrap(True)
-        text1.setStyleSheet(_text_style)
-        left_col.addWidget(text1)
-
-        text2 = QLabel(
-            "One structure is strictly above another if the lowest point of the upper structure is higher "
-            "than the highest point of the lower one."
-        )
-        text2.setWordWrap(True)
-        text2.setStyleSheet(_text_style)
-        left_col.addWidget(text2)
-
-        left_col.addStretch(1)
-
-        # Right column: textual examples + images side by side (No and Yes)
-        right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=5)
-
-        _img_dir = ASSETS_DIR / "definition_images"
-        screen = QGuiApplication.primaryScreen()
-        avail_h = screen.availableGeometry().height() if screen is not None else 900
-        img_height = max(720, int(avail_h * 0.90))
-
-        img_style = IMG_STYLE_DEFAULT
-        placeholder_style = PLACEHOLDER_STYLE_DEFAULT
-
-        # Left: examples stacked vertically, Right: CoM explanation + image
-        examples_and_com = QHBoxLayout()
-        right_col.addLayout(examples_and_com)
-
-        examples_col = QVBoxLayout()
-        examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=3)
-
-        # No example (Femur–Tibia)
-        no_col = QVBoxLayout()
-        no_col.setSpacing(4)
-        examples_col.addLayout(no_col)
-        no_text = QLabel('Example 1: "Is the Femur strictly above the Tibia?" → Answer: No.')
-        no_text.setWordWrap(True)
-        no_text.setStyleSheet(_text_style)
-        no_col.addWidget(no_text)
-
-        no_label = ClickableImageLabel("Vertical example 1 — full view")
-        no_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        no_label.enable_interactive_view(True)
-        no_label.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            no_label,
-            _img_dir / "example_vert_No.png",
-            2 * img_height,
-            "[Add vertical No example image here]",
-        )
-        no_col.addWidget(no_label)
-
-        # Yes example (Femur–Fibula)
-        yes_col = QVBoxLayout()
-        yes_col.setSpacing(4)
-        examples_col.addLayout(yes_col)
-        yes_text = QLabel('Example 2: "Is the Femur strictly above the Fibula?" → Answer: Yes.')
-        yes_text.setWordWrap(True)
-        yes_text.setStyleSheet(_text_style)
-        yes_text.setContentsMargins(12, 0, 0, 0)
-        yes_col.addWidget(yes_text)
-
-        yes_label = ClickableImageLabel("Vertical example 2 — full view")
-        yes_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        yes_label.enable_interactive_view(True)
-        yes_label.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            yes_label,
-            _img_dir / "eample_vert_Yes.png",
-            2 * img_height,
-            "[Add vertical Yes example image here]",
-        )
-        yes_col.addWidget(yes_label)
-
-        # CoM explanation + image to the right of the examples
-        com_col = QVBoxLayout()
-        # Give the CoM panel much more space than the examples panel by default.
-        examples_and_com.addLayout(com_col, stretch=3)
-
-        com_heading = QLabel("Center of mass (CoM)")
-        com_heading.setStyleSheet(_heading_style)
-        com_col.addWidget(com_heading)
-
-        com_text = QLabel(
-            "For the vertical axis, CoM is scaled from 0 (toes/feet, most inferior) "
-            "to 100 (vertex/head, most superior)."
-        )
-        com_text.setWordWrap(True)
-        com_text.setStyleSheet(_text_style)
-        com_col.addWidget(com_text)
-
-        com_img = ClickableImageLabel("Vertical CoM — full view")
-        com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        com_img.enable_interactive_view(True)
-        com_img.setStyleSheet(img_style)
-        # Make the third image (CoM) much larger by default.
-        com_img.set_preferred_size(2200, 4 * img_height)
-        _configure_definition_image_label(
-            com_img,
-            _img_dir / "Vertical_CoM_numbers.png",
-            4 * img_height,
-            "[Add vertical CoM image here]",
-        )
-        com_col.addWidget(com_img)
-
-        # Proceed button + image source note below all content (bottom bar)
-        button_box = QFrame()
-        button_box.setStyleSheet(
-            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 16px; padding-top: 8px; }"
-        )
-        btn_row = QHBoxLayout(button_box)
-        source = QLabel("Images in this window are captured from Complete Anatomy.")
-        source.setWordWrap(True)
-        source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
-        btn_row.addWidget(source)
-        btn_row.addStretch(1)
-        proceed_btn = QPushButton("Proceed")
-        proceed_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #007aff; color: white; border: none; border-radius: 8px;
-                padding: 10px 22px; font-size: 15px;
-            }
-            QPushButton:hover { background-color: #5ac8fa; }
-            QPushButton:pressed { background-color: #0051d5; }
-            """
-        )
-        proceed_btn.clicked.connect(self.accept)
-        btn_row.addWidget(proceed_btn)
-        main.addWidget(button_box)
-
-
-class MediolateralDefinitionDialog(QDialog):
-    """
-    Dedicated window for the lateral (right–left) 'strictly to the left of' definition and examples.
-    Shown only when the lateral axis is selected; user presses 'Proceed' to start questions.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle('Definition — Lateral "strictly to the left of"')
-        self.resize(1200, 800)
-        self.setModal(True)
-        self.setStyleSheet("background-color: #ffffff;")
-
-        main = QVBoxLayout(self)
-
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geom = screen.availableGeometry()
-            w = min(self.width(), geom.width())
-            h = min(self.height(), geom.height())
-            self.resize(w, h)
-            self.setMaximumSize(geom.width(), geom.height())
-        content = QHBoxLayout()
-        main.addLayout(content)
-
-        _text_style = "color: #1a1a1a; font-size: 14px; padding: 4px 0;"
-        _heading_style = "color: #1a1a1a; font-weight: bold; font-size: 16px; padding: 4px 0 4px 0;"
-
-        # Left column: text (task, definition, question form)
-        left_col = QVBoxLayout()
-        content.addLayout(left_col, stretch=2)
-
-        heading = QLabel('Lateral relation: "strictly to the left of"')
-        heading.setStyleSheet(_heading_style)
-        left_col.addWidget(heading)
-
-        text1 = QLabel(
-            'For each pair of structures you will answer "Yes" or "No" to: '
-            '"Is the first structure strictly to the left of the second along the '
-            "right–left (lateral) axis, from the patient's perspective?"
-        )
-        text1.setWordWrap(True)
-        text1.setStyleSheet(_text_style)
-        left_col.addWidget(text1)
-
-        text2 = QLabel(
-            "One structure is strictly to the left of another if the rightmost point of the first is to the left "
-            "of the leftmost point of the second."
-        )
-        text2.setWordWrap(True)
-        text2.setStyleSheet(_text_style)
-        left_col.addWidget(text2)
-
-        patient_note = QLabel(
-            "Left and right are always defined from the patient's view: the patient's right femur is to the right "
-            "of the patient's left femur."
-        )
-        patient_note.setWordWrap(True)
-        patient_note.setStyleSheet(_text_style)
-        left_col.addWidget(patient_note)
-
-        left_col.addStretch(1)
-
-        # Right column: two examples side-by-side (text above image)
-        right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=8)
-
-        _img_dir = ASSETS_DIR / "definition_images"
-        screen = QGuiApplication.primaryScreen()
-        avail_h = screen.availableGeometry().height() if screen is not None else 900
-        img_height = max(720, int(avail_h * 0.84))
-
-        img_style = IMG_STYLE_DEFAULT
-        placeholder_style = PLACEHOLDER_STYLE_DEFAULT
-
-        # Left: examples stacked vertically, Right: CoM explanation + image
-        examples_and_com = QHBoxLayout()
-        right_col.addLayout(examples_and_com)
-
-        examples_col = QVBoxLayout()
-        examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=4)
-
-        # Example (Yes)
-        yes_col = QVBoxLayout()
-        yes_col.setSpacing(4)
-        examples_col.addLayout(yes_col)
-        ex1_text = QLabel(
-            'Example 1: "Is the Left femur strictly to the left of the Right femur?" '
-            "→ Answer: Yes (from the patient's perspective)."
-        )
-        ex1_text.setWordWrap(True)
-        ex1_text.setStyleSheet(_text_style)
-        yes_col.addWidget(ex1_text)
-
-        ex1_img = ClickableImageLabel("Lateral example 1 — full view")
-        ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex1_img.enable_interactive_view(True)
-        ex1_img.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            ex1_img,
-            _img_dir / "example_lat_yes.png",
-            2 * img_height,
-            "[Add mediolateral Yes example image here]",
-        )
-        yes_col.addWidget(ex1_img)
-
-        # Example (No)
-        no_col = QVBoxLayout()
-        no_col.setSpacing(4)
-        examples_col.addLayout(no_col)
-        ex2_text = QLabel(
-            'Example 2: "Is the Left femur strictly to the left of the pelvis?" '
-            "→ Answer: No (they overlap in the mediolateral direction)."
-        )
-        ex2_text.setWordWrap(True)
-        ex2_text.setStyleSheet(_text_style)
-        ex2_text.setContentsMargins(12, 0, 0, 0)
-        no_col.addWidget(ex2_text)
-
-        ex2_img = ClickableImageLabel("Lateral example 2 — full view")
-        ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex2_img.enable_interactive_view(True)
-        ex2_img.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            ex2_img,
-            _img_dir / "example_lat_no.png",
-            2 * img_height,
-            "[Add mediolateral No example image here]",
-        )
-        no_col.addWidget(ex2_img)
-
-        # CoM explanation + image to the right of the examples
-        com_col = QVBoxLayout()
-        examples_and_com.addLayout(com_col, stretch=2)
-
-        com_heading = QLabel("Center of mass (CoM)")
-        com_heading.setStyleSheet(_heading_style)
-        com_col.addWidget(com_heading)
-
-        com_text = QLabel(
-            "For the lateral axis, CoM is scaled from 0 (far right, e.g. right thumb) "
-            "to 100 (far left, e.g. left thumb), from the patient's perspective."
-        )
-        com_text.setWordWrap(True)
-        com_text.setStyleSheet(_text_style)
-        com_col.addWidget(com_text)
-
-        com_img = ClickableImageLabel("Lateral CoM — full view")
-        com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        com_img.enable_interactive_view(True)
-        com_img.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            com_img,
-            _img_dir / "Lateral_CoM_numbers.png",
-            4 * img_height,
-            "[Add mediolateral CoM image here]",
-        )
-        # Match the vertical dialog: give CoM more horizontal room so it can
-        # render at full scale (otherwise the label gets squeezed width-wise).
-        com_img.set_preferred_size(2200, 4 * img_height)
-        com_col.addWidget(com_img)
-
-        # Proceed button + image source note below all content
-        button_box = QFrame()
-        button_box.setStyleSheet(
-            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 16px; padding-top: 8px; }"
-        )
-        btn_row = QHBoxLayout(button_box)
-        source = QLabel("Images in this window are captured from Complete Anatomy.")
-        source.setWordWrap(True)
-        source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
-        btn_row.addWidget(source)
-        btn_row.addStretch(2)
-        proceed_btn = QPushButton("Proceed")
-        proceed_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #007aff; color: white; border: none; border-radius: 8px;
-                padding: 10px 22px; font-size: 15px;
-            }
-            QPushButton:hover { background-color: #5ac8fa; }
-            QPushButton:pressed { background-color: #0051d5; }
-            """
-        )
-        proceed_btn.clicked.connect(self.accept)
-        btn_row.addWidget(proceed_btn)
-        main.addWidget(button_box)
-
-
-class AnteroposteriorDefinitionDialog(QDialog):
-    """
-    Dedicated window for the anteroposterior (front–back) 'strictly in front of' definition and examples.
-    Shown only when the anteroposterior axis is selected; user presses 'Proceed' to start questions.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setWindowTitle('Definition — Anteroposterior "strictly in front of"')
-        self.resize(1200, 800)
-        self.setModal(True)
-        self.setStyleSheet("background-color: #ffffff;")
-
-        main = QVBoxLayout(self)
-
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geom = screen.availableGeometry()
-            w = min(self.width(), geom.width())
-            h = min(self.height(), geom.height())
-            self.resize(w, h)
-            self.setMaximumSize(geom.width(), geom.height())
-        content = QHBoxLayout()
-        main.addLayout(content)
-
-        _text_style = "color: #1a1a1a; font-size: 14px; padding: 4px 0;"
-        _heading_style = "color: #1a1a1a; font-weight: bold; font-size: 16px; padding: 4px 0 4px 0;"
-
-        # Left column: text (task, definition, question form)
-        left_col = QVBoxLayout()
-        content.addLayout(left_col, stretch=6)
-
-        heading = QLabel('Anteroposterior relation: "strictly in front of"')
-        heading.setStyleSheet(_heading_style)
-        left_col.addWidget(heading)
-
-        text1 = QLabel(
-            'For each pair of structures you will answer "Yes" or "No" to:\n'
-            '  "Is the first structure strictly in front of the second along the front–back '
-            "(anteroposterior) axis?"
-        )
-        text1.setWordWrap(True)
-        text1.setStyleSheet(_text_style)
-        left_col.addWidget(text1)
-
-        text2 = QLabel(
-            "One structure is strictly in front of another if the posterior-most point of the first is anterior "
-            "to the anterior-most point of the second."
-        )
-        text2.setWordWrap(True)
-        text2.setStyleSheet(_text_style)
-        left_col.addWidget(text2)
-
-        left_col.addStretch(1)
-
-        # Right column: two examples side-by-side (text above image)
-        right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=6)
-
-        img_height = 280
-
-        img_style = IMG_STYLE_DEFAULT
-        placeholder_style = PLACEHOLDER_STYLE_DEFAULT
-
-        _img_dir = ASSETS_DIR / "definition_images"
-        screen = QGuiApplication.primaryScreen()
-        avail_h = screen.availableGeometry().height() if screen is not None else 900
-        img_height = max(720, int(avail_h * 0.84))
-
-        # Left: examples stacked vertically, Right: CoM explanation + image
-        examples_and_com = QHBoxLayout()
-        right_col.addLayout(examples_and_com)
-
-        examples_col = QVBoxLayout()
-        examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=4)
-
-        # Example (Yes)
-        yes_col = QVBoxLayout()
-        yes_col.setSpacing(4)
-        examples_col.addLayout(yes_col)
-        ex1_text = QLabel(
-            'Example 1 (Yes): "Is the sternum strictly in front of the thoracic spine?" → Answer: Yes.'
-        )
-        ex1_text.setWordWrap(True)
-        ex1_text.setStyleSheet(_text_style)
-        yes_col.addWidget(ex1_text)
-
-        ex1_img = ClickableImageLabel("Anteroposterior example 1 — full view")
-        ex1_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex1_img.enable_interactive_view(True)
-        ex1_img.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            ex1_img,
-            _img_dir / "example_ap_yes.png",
-            2 * img_height,
-            "[Add anteroposterior Yes example image here]",
-        )
-        yes_col.addWidget(ex1_img)
-
-        # Example (No)
-        no_col = QVBoxLayout()
-        no_col.setSpacing(4)
-        examples_col.addLayout(no_col)
-        ex2_text = QLabel(
-            'Example 2 (No): "Is the clavicle strictly in front of the cervical spine?" → Answer: No.'
-        )
-        ex2_text.setWordWrap(True)
-        ex2_text.setStyleSheet(_text_style)
-        ex2_text.setContentsMargins(12, 0, 0, 0)
-        no_col.addWidget(ex2_text)
-
-        ex2_img = ClickableImageLabel("Anteroposterior example 2 — full view")
-        ex2_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ex2_img.enable_interactive_view(True)
-        ex2_img.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            ex2_img,
-            _img_dir / "example_ap_no.png",
-            2 * img_height,
-            "[Add anteroposterior No example image here]",
-        )
-        no_col.addWidget(ex2_img)
-
-        # CoM explanation + image to the right of the examples
-        com_col = QVBoxLayout()
-        examples_and_com.addLayout(com_col, stretch=2)
-
-        com_heading = QLabel("Center of mass (CoM)")
-        com_heading.setStyleSheet(_heading_style)
-        com_col.addWidget(com_heading)
-
-        com_text = QLabel(
-            "For the anteroposterior axis, CoM is scaled from 0 (back/dorsal side) "
-            "to 100 (front/ventral side)."
-        )
-        com_text.setWordWrap(True)
-        com_text.setStyleSheet(_text_style)
-        com_col.addWidget(com_text)
-
-        com_img = ClickableImageLabel("Anteroposterior CoM — full view")
-        com_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        com_img.enable_interactive_view(True)
-        com_img.setStyleSheet(img_style)
-        _configure_definition_image_label(
-            com_img,
-            _img_dir / "AP_CoM_numbers.png",
-            4 * img_height,
-            "[Add anteroposterior CoM image here]",
-        )
-        # Match the vertical dialog: give CoM more horizontal room so it can
-        # render at full scale (otherwise the label gets squeezed width-wise).
-        com_img.set_preferred_size(2200, 4 * img_height)
-        com_col.addWidget(com_img)
-
-        # Proceed button + image source note below all content
-        button_box = QFrame()
-        button_box.setStyleSheet(
-            "QFrame { border-top: 1px solid #e0e0e0; margin-top: 16px; padding-top: 8px; }"
-        )
-        btn_row = QHBoxLayout(button_box)
-        source = QLabel("Images in this window are captured from Complete Anatomy.")
-        source.setWordWrap(True)
-        source.setStyleSheet("color: #555; font-size: 10px; margin-top: 4px;")
-        btn_row.addWidget(source)
-        btn_row.addStretch(1)
-        proceed_btn = QPushButton("Proceed")
-        proceed_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: #007aff; color: white; border: none; border-radius: 8px;
-                padding: 10px 22px; font-size: 15px;
-            }
-            QPushButton:hover { background-color: #5ac8fa; }
-            QPushButton:pressed { background-color: #0051d5; }
-            """
-        )
-        proceed_btn.clicked.connect(self.accept)
-        btn_row.addWidget(proceed_btn)
-        main.addWidget(button_box)
-
-
 class QueryDialog(QDialog):
     """
     Standalone dialog for expert queries only.
@@ -1676,7 +742,7 @@ class QueryDialog(QDialog):
 
     def __init__(
         self,
-        poset_builder: PosetBuilder,
+        poset_builder: MatrixBuilder,
         autosave_path: Path,
         axis: str,
         save_callback: Callable[[str, List[Structure], List[List[int]]], None],
@@ -1696,6 +762,8 @@ class QueryDialog(QDialog):
         self.pending_pair: Tuple[int, int] | None = None
         # answer is True (Yes), False (No), or None ("Not sure"/skipped)
         self._answer_history: List[Tuple[int, int, Optional[bool]]] = []
+        # Snapshot of M before each user answer (enables correct undo for tri-valued matrix).
+        self._matrix_snapshots: List[List[List[int]]] = []
         # Clamp initial size to screen, but do not lock min/max.
         self._clamp_to_current_screen()
 
@@ -2046,25 +1114,10 @@ class QueryDialog(QDialog):
         if not self._autosave_path or not self._save_callback:
             return
         try:
-            # MatrixBuilder exposes a full tri-valued matrix; fall back to classical edges if needed.
-            from anatomy_poset.core.builder import MatrixBuilder  # local import to avoid cycles
-
-            if isinstance(self.poset_builder, MatrixBuilder):
-                if seal_lower_triangle:
-                    self.poset_builder.seal_lower_triangle_com_prior()
-                structures = self.poset_builder.structures
-                matrix = self.poset_builder.M  # type: ignore[attr-defined]
-            else:
-                # Classical builder: derive a +1 / 0 matrix from the final Hasse edges.
-                structures, edges = self.poset_builder.get_final_relations()
-                n = len(structures)
-                matrix = [[-2 for _ in range(n)] for _ in range(n)]
-                for i in range(n):
-                    matrix[i][i] = -1
-                for u, v in edges:
-                    if 0 <= u < n and 0 <= v < n:
-                        matrix[u][v] = 1
-
+            if seal_lower_triangle:
+                self.poset_builder.seal_lower_triangle_com_prior()
+            structures = self.poset_builder.structures
+            matrix = self.poset_builder.M
             self._save_callback(self._axis, structures, matrix)
         except Exception:
             pass
@@ -2085,22 +1138,19 @@ class QueryDialog(QDialog):
         feedback: str,
     ) -> None:
         """
-        Append a feedback report entry to a timestamped .jsonl file next to the autosave JSON.
+        Append a feedback report entry to a .jsonl file next to the autosave JSON.
         A file is created the first time feedback is provided.
         """
         feedback = (feedback or "").strip()
         if not feedback:
             return
         try:
-            ts = datetime.now(timezone.utc).isoformat()
             if self._feedback_log_path is None:
                 base_dir = self._autosave_path.parent
                 stem = self._autosave_path.stem
-                session_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                self._feedback_log_path = base_dir / f"{stem}.feedback.{session_ts}.jsonl"
+                self._feedback_log_path = base_dir / f"{stem}.feedback.jsonl"
 
             entry = {
-                "timestamp_utc": ts,
                 "axis": self._axis,
                 "question": question_text,
                 "answer": (
@@ -2201,36 +1251,24 @@ class QueryDialog(QDialog):
             feedback=feedback_text,
         )
         i, j = self.pending_pair
+        self._matrix_snapshots.append([row[:] for row in self.poset_builder.M])
         self._answer_history.append((i, j, is_above))
         self.back_btn.setEnabled(True)
 
-        # Prefer tri-valued MatrixBuilder semantics when available.
-        if isinstance(self.poset_builder, MatrixBuilder):
-            if is_above is True:
-                # YES: i above j
-                self.poset_builder.record_response_matrix(i, j, 1)
-            elif is_above is False:
-                # NO: i is not above j
-                self.poset_builder.record_response_matrix(i, j, -1)
-            else:
-                # NOT SURE
-                self.poset_builder.record_unknown(i, j)
+        if is_above is True:
+            self.poset_builder.record_response_matrix(i, j, 1)
+        elif is_above is False:
+            self.poset_builder.record_response_matrix(i, j, -1)
         else:
-            # Backward-compatible behaviour for classical PosetBuilder.
-            if is_above is True:
-                self.poset_builder.record_response(i, j, True)
-            elif is_above is None:
-                self.poset_builder.record_skip(i, j)
+            self.poset_builder.record_unknown(i, j)
         self._advance_to_next_query()
 
     def go_back_one_question(self) -> None:
-        if not self._answer_history:
+        if not self._answer_history or not self._matrix_snapshots:
             return
-        last_i, last_j, last_answer = self._answer_history.pop()
-        if last_answer is True:
-            self.poset_builder.edges.discard((last_i, last_j))
-        elif last_answer is None:
-            self.poset_builder.unskip_pair(last_i, last_j)
+        last_i, last_j, _last_answer = self._answer_history.pop()
+        prev_m = self._matrix_snapshots.pop()
+        self.poset_builder.restore_matrix(prev_m)
         self.poset_builder.finished = False
         self.poset_builder.current_gap = last_j - last_i
         self.poset_builder.current_i = last_i + 1

@@ -12,7 +12,7 @@ from src.anatomy_poset.core.models import AXIS_VERTICAL, Structure
 
 
 def test_matrix_builder_sorting_inherited() -> None:
-    """Same CoM sort order as PosetBuilder."""
+    """Same CoM sort order as MatrixBuilder base ordering."""
     structures = [
         Structure("Pelvis", com_vertical=40.0, com_lateral=50.0, com_anteroposterior=50.0),
         Structure("Skull", com_vertical=90.0, com_lateral=50.0, com_anteroposterior=50.0),
@@ -94,7 +94,7 @@ def test_vertical_bilateral_mirrors_always_match_after_propagation() -> None:
 
 
 def test_matrix_record_response_symmetry_vertical() -> None:
-    """Mirrors YES from Left core to Right core (same as PosetBuilder semantics)."""
+    """Mirrors YES from Left core to Right core (vertical bilateral symmetry)."""
     structures = [
         Structure("Skull", com_vertical=90.0, com_lateral=50.0, com_anteroposterior=0.0),
         Structure("Left Femur", com_vertical=20.0, com_lateral=80.0, com_anteroposterior=0.0),
