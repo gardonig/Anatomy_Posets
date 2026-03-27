@@ -1,6 +1,6 @@
 """Body-region presets for subset runs."""
 
-from anatomy_poset.core.models import Structure
+from anatomy_poset.core.axis_models import Structure
 from anatomy_poset.core.structure_regions import (
     REGION_1_TRUNK_VISCERA_NO_ARMS,
     REGION_2_NEUROAXIS_SHOULDER_ARMS,

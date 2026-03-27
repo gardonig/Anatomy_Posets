@@ -1,8 +1,8 @@
 import json
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from .models import Structure
+from .axis_models import Structure
 
 def load_structures_from_json(path: str) -> List[Structure]:
     """
@@ -33,19 +33,25 @@ def load_structures_from_json(path: str) -> List[Structure]:
 def save_poset_to_json(
     path: str,
     structures: List[Structure],
-    matrix_vertical: List[List[int]],
-    matrix_mediolateral: List[List[int]] | None = None,
-    matrix_anteroposterior: List[List[int]] | None = None,
+    matrix_vertical: List[List[Union[int, float, None]]],
+    matrix_mediolateral: Optional[List[List[Union[int, float, None]]]] = None,
+    matrix_anteroposterior: Optional[List[List[Union[int, float, None]]]] = None,
+    *,
+    matrix_vertical_p_yes: Optional[List[List[Optional[float]]]] = None,
+    matrix_mediolateral_p_yes: Optional[List[List[Optional[float]]]] = None,
+    matrix_anteroposterior_p_yes: Optional[List[List[Optional[float]]]] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
-    Save tri-valued relation matrices to JSON. All axes stored in one file.
+    Save relation matrices to JSON. All axes stored in one file.
 
-    Each matrix entry is in {-2, -1, 0, +1} with the following meaning:
-      -2: not asked
-      -1: explicit "no" / not-above
-       0: asked but "not sure"
-      +1: "yes" / above
+    Matrix values may be either:
+    - tri-valued entries in {-2, -1, 0, +1}, or
+    - probability entries in [0, 1] with ``null`` for unanswered cells.
+
+    Optional ``matrix_*_p_yes``: merged **probability consensus** (``P(yes) ∈ [0, 1]`` or
+    ``null`` where no rater answered that cell), same convention as ``(μ+1)/2`` over answered
+    codes only. Omitted when not provided.
 
     ``extra`` is merged into the top-level JSON object (e.g. merge metadata).
     """
@@ -60,6 +66,12 @@ def save_poset_to_json(
         "matrix_mediolateral": matrix_mediolateral,
         "matrix_anteroposterior": matrix_anteroposterior,
     }
+    if matrix_vertical_p_yes is not None:
+        payload["matrix_vertical_p_yes"] = matrix_vertical_p_yes
+    if matrix_mediolateral_p_yes is not None:
+        payload["matrix_mediolateral_p_yes"] = matrix_mediolateral_p_yes
+    if matrix_anteroposterior_p_yes is not None:
+        payload["matrix_anteroposterior_p_yes"] = matrix_anteroposterior_p_yes
     if extra:
         payload.update(extra)
     with open(path, "w", encoding="utf-8") as f:
@@ -69,9 +81,9 @@ def load_poset_from_json(
     path: str,
 ) -> Tuple[
     List[Structure],
-    List[List[int]],
-    List[List[int]],
-    List[List[int]],
+    List[List[Union[int, float]]],
+    List[List[Union[int, float]]],
+    List[List[Union[int, float]]],
 ]:
     """
     Load poset(s) from JSON.
@@ -142,12 +154,12 @@ def load_poset_from_json(
         M_ap = _fallback_matrix_from_edges("edges_anteroposterior", "adjacency_anteroposterior")
 
     # Ensure matrices are n x n with ints
-    def _normalize_matrix(M: list) -> List[List[int]]:
-        mat = [[-2 for _ in range(n)] for _ in range(n)]
-        # By convention, diagonal is always explicit NO (-1): nothing is strictly above itself.
-        for i in range(n):
-            mat[i][i] = -1
+    def _normalize_matrix(M: list) -> List[List[Union[int, float]]]:
+        mat: List[List[Union[int, float]]] = [[-2 for _ in range(n)] for _ in range(n)]
+        has_probability = False
         if not isinstance(M, list):
+            for i in range(n):
+                mat[i][i] = -1
             return mat
         for i in range(min(n, len(M))):
             row = M[i]
@@ -155,12 +167,25 @@ def load_poset_from_json(
                 continue
             for j in range(min(n, len(row))):
                 try:
-                    mat[i][j] = int(row[j])
+                    raw = row[j]
+                    if raw is None:
+                        mat[i][j] = -2
+                        continue
+                    fv = float(raw)
+                    if -2 <= fv <= 1 and abs(fv - round(fv)) < 1e-9:
+                        mat[i][j] = int(round(fv))
+                    elif 0.0 <= fv <= 1.0:
+                        mat[i][j] = fv
+                        has_probability = True
+                    else:
+                        mat[i][j] = -2
                 except (TypeError, ValueError):
                     mat[i][j] = -2
-        # Re-enforce diagonal convention even if source data had other values/missing cells.
+        # Diagonal convention depends on matrix kind:
+        # - discrete: explicit NO (-1)
+        # - probability: P(self above self) = 0.0
         for i in range(n):
-            mat[i][i] = -1
+            mat[i][i] = 0.0 if has_probability else -1
         return mat
 
     M_v_norm = _normalize_matrix(M_v)

@@ -8,7 +8,7 @@ Run from repo root:
 Produces ``examples/algorithm1_walkthrough.png`` with the matrix M after each
 human answer (tri-valued: -2 not asked, -1 no, 0 unsure, +1 yes / strictly above).
 
-Structure indices follow :class:`anatomy_poset.core.builder.MatrixBuilder`:
+Structure indices follow :class:`anatomy_poset.core.matrix_builder.MatrixBuilder`:
   index 0 = highest vertical CoM (most superior), …, index n-1 = lowest.
   M[i][j] = +1 means “structure i is strictly above structure j” on the vertical axis.
 """
@@ -27,8 +27,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import BoundaryNorm, ListedColormap
 
-from anatomy_poset.core.builder import MatrixBuilder
-from anatomy_poset.core.models import AXIS_VERTICAL, Structure
+from anatomy_poset.core.matrix_builder import MatrixBuilder
+from anatomy_poset.core.axis_models import AXIS_VERTICAL, Structure
 
 
 def _print_theory_n4() -> None:

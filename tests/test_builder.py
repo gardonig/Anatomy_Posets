@@ -1,8 +1,8 @@
-from src.anatomy_poset.core.models import (
+from src.anatomy_poset.core.axis_models import (
     AXIS_VERTICAL,
     Structure,
 )
-from src.anatomy_poset.core.builder import MatrixBuilder
+from src.anatomy_poset.core.matrix_builder import MatrixBuilder
 
 
 def create_mock_structures():

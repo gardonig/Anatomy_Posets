@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.anatomy_poset.core.models import Structure
+from src.anatomy_poset.core.axis_models import Structure
 
 
 def create_mock_structures() -> list[Structure]:

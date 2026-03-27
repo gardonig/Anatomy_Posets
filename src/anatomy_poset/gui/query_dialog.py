@@ -24,12 +24,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.builder import (
+from ..core.matrix_builder import (
     MatrixBuilder,
     _parse_bilateral_core as parse_bilateral_core,
 )
 from ..core.config import ASSETS_DIR
-from ..core.models import (
+from ..core.axis_models import (
     AXIS_ANTERIOR_POSTERIOR,
     AXIS_MEDIOLATERAL,
     AXIS_VERTICAL,

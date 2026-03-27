@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.config import ASSETS_DIR
-from ..core.models import AXIS_VERTICAL
+from ..core.axis_models import AXIS_VERTICAL
 from .dialog_widgets import ClickableImageLabel
 
 

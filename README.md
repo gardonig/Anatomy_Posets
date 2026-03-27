@@ -25,7 +25,7 @@ After **canonical sorting** by CoM on the active axis (descending), **lower tria
 
 ## How the matrix is built (algorithm)
 
-1. **Sort structures** by the chosen axis CoM (descending), matching `MatrixBuilder`.
+1. **Sort structures** by the chosen axis CoM (descending), matching `matrix_builder.MatrixBuilder`.
 2. **Initialize** \(M\): diagonal **−1**, lower triangle **−1**, upper triangle **−2** (plus bilateral / equal-CoM rules as implemented).
 3. **Gap-based queries** (`next_pair`): pairs \((i, j)\) with \(j = i + \text{gap}\) are considered in order of increasing gap (1, 2, …). Pairs already decided (not **−2**), implied by **transitive +1** reachability, or skipped by vertical bilateral symmetry rules are not asked again.
 4. **Optional region subsets**: you can restrict **which pairs are asked** to those whose **both** endpoints lie in selected body-region presets; the **saved JSON still lists every structure** and the same **n×n** matrix size so merges stay compatible.
@@ -42,10 +42,10 @@ The poset viewer’s **Merge JSON files…** combines several saved posets that 
 
 1. **Align** non-reference files to the **first** file’s structure order: index \(i\) must refer to the same organ across files. If the JSON order differs, matrices are **permuted** by matching **name + CoM** (within tolerance), or merge fails if sets are incompatible.
 2. **Canonical sort per axis** (vertical / mediolateral / anteroposterior) reorders each rater’s matrix for that axis (CoM descending) and **reseals** the lower triangle to **−1**.
-3. **Per-cell aggregation** (`aggregate_matrices_with_counts`): for each directed pair \((i,j)\), each rater contributes **−2** (not asked), or **−1 / 0 / +1** if answered. **−2** is excluded from the mean and vote counts.
-4. **Consensus matrix** (for Hasse / saved merged JSON): **plurality vote** on \(\{-1,0,+1\}\) over answered raters. If **two** values tie for the count, the tie is broken by **rounding the arithmetic mean** to \(\{-1,0,+1\}\) (same convention as `aggregate_to_consensus_matrix` in code).
-5. **Merged heatmap** (optional): **P(yes) = (μ + 1) / 2** where **μ** is the mean of answered codes **only** (so partial overlap with one rater **−2** and one **0** gives **μ = 0** → **P = 0.5**; **0** and **+1** from both raters gives **μ = 0.5** → **P = 0.75**).
-6. **Save** writes one JSON with **structures** in vertical-CoM order and **reindexed** mediolateral / anteroposterior matrices to that same label order.
+3. **Per-cell aggregation** (`matrix_aggregation.aggregate_matrices_with_counts`): for each directed pair \((i,j)\), each rater contributes **−2** (not asked), or **−1 / 0 / +1** if answered. **−2** is excluded from the mean and vote counts.
+4. **Probability matrix** (`matrix_aggregation.aggregate_to_p_yes_matrix`): for each directed pair, compute **\(P(\text{yes})=(\mu+1)/2\)** where **\(\mu\)** is the mean of answered codes only (`−2` excluded). If nobody answered that cell, the saved value is JSON **`null`**.
+5. **Hasse extraction rule**: use only edges with **`p == 1`** (strict certainty). Values in \(0 < p < 1\) are partial evidence shown in the heatmap/list summaries but not strict order edges.
+6. **Save merged** writes one JSON with **structures** in vertical-CoM order and **reindexed** mediolateral / anteroposterior probability matrices in `matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior`.
 
 ---
 
@@ -152,7 +152,7 @@ anatomy_poset/
 │   ├── Input_CoM_structures/    # Input CoM JSONs
 │   └── Output_constructed_posets/  # Saved posets (autosave)
 ├── src/anatomy_poset/
-│   ├── core/                    # Models, IO, MatrixBuilder
+│   ├── core/                    # axis_models, io, matrix_builder, matrix_aggregation
 │   └── gui/                     # PySide6 GUI (main window, dialogs, poset_viewer)
 ├── scripts/                     # Helper scripts (e.g. view_full_body_male.py)
 ├── run.py                       # Quick-start GUI launcher

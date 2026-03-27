@@ -1,10 +1,11 @@
 """Tests for multi-rater matrix aggregation and structure compatibility."""
 
-from anatomy_poset.core.aggregation import (
+from anatomy_poset.core.matrix_aggregation import (
     CellAggregate,
     aggregate_matrices_mean_only,
     aggregate_matrices_with_counts,
     aggregate_to_consensus_matrix,
+    aggregate_to_p_yes_matrix,
     align_matrix_lists_to_reference,
     apply_canonical_per_axis_orders,
     cell_aggregate_to_display_matrix,
@@ -14,7 +15,7 @@ from anatomy_poset.core.aggregation import (
     structure_list_signature,
     validate_structures_compatible,
 )
-from anatomy_poset.core.models import Structure
+from anatomy_poset.core.axis_models import Structure
 
 
 def _struct(name: str, v: float = 0.0, ml: float = 0.0, ap: float = 0.0) -> Structure:
@@ -187,3 +188,22 @@ def test_consensus_majority() -> None:
     agg, _ = aggregate_matrices_with_counts([m1, m2, m3])
     cons = aggregate_to_consensus_matrix(agg)
     assert cons[0][1] == 1  # two +1, one -1
+
+
+def test_p_yes_off_diagonal_mean() -> None:
+    """P(yes) from mean of answered codes; −2 excluded (one −2, one 0 → μ=0 → P=0.5)."""
+    m1 = [[-1, -2], [-2, -1]]
+    m2 = [[-1, 0], [0, -1]]
+    agg, _ = aggregate_matrices_with_counts([m1, m2])
+    p = aggregate_to_p_yes_matrix(agg)
+    assert p[0][1] == 0.5
+    assert p[1][0] == 0.5
+
+
+def test_p_yes_none_when_no_answers() -> None:
+    m1 = [[-1, -2], [-2, -1]]
+    m2 = [[-1, -2], [-2, -1]]
+    agg, _ = aggregate_matrices_with_counts([m1, m2])
+    p = aggregate_to_p_yes_matrix(agg)
+    assert p[0][1] is None
+    assert p[0][0] == 0.0  # diagonal

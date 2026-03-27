@@ -2,7 +2,7 @@ import os
 import sys
 from pathlib import Path
 
-from ..core.models import AXIS_MEDIOLATERAL, AXIS_VERTICAL
+from ..core.axis_models import AXIS_MEDIOLATERAL, AXIS_VERTICAL
 
 
 def _ensure_qt_platform_plugin_path() -> None:

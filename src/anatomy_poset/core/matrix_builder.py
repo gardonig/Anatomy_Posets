@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
 
-from .models import AXIS_ANTERIOR_POSTERIOR, AXIS_MEDIOLATERAL, AXIS_VERTICAL, Structure
+from .axis_models import AXIS_ANTERIOR_POSTERIOR, AXIS_MEDIOLATERAL, AXIS_VERTICAL, Structure
 
 
 def _parse_bilateral_core(name: str) -> Tuple[Optional[str], Optional[str]]:
@@ -666,9 +666,9 @@ def aggregate_matrices(matrices: List[List[List[int]]]) -> List[List[float]]:
       - ignore entries where M[i][j] == -2 (never asked)
       - otherwise, average the values across raters/sessions
 
-    See also :func:`anatomy_poset.core.aggregation.aggregate_matrices_with_counts` for counts.
+    See also :func:`anatomy_poset.core.matrix_aggregation.aggregate_matrices_with_counts` for counts.
     """
-    from .aggregation import aggregate_matrices_mean_only
+    from .matrix_aggregation import aggregate_matrices_mean_only
 
     return aggregate_matrices_mean_only(matrices)
 

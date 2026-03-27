@@ -5,7 +5,7 @@ window). Shows per-axis structure lists, Hasse diagrams, matrix merge, and feedb
 Standalone slice/atlas UIs were removed as unused; the expert query flow uses ``FullBodyVolumePanel``
 in ``query_dialog.py`` for NumPy volume browsing.
 """
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 import json
 import math
 
@@ -42,17 +42,16 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 
 from ..core.config import OUTPUT_DIR
 from ..core.io import load_poset_from_json, save_poset_to_json
-from ..core.aggregation import (
+from ..core.matrix_aggregation import (
     CellAggregate,
     aggregate_matrices_with_counts,
-    aggregate_to_consensus_matrix,
+    aggregate_to_p_yes_matrix,
     align_matrix_lists_to_reference,
     apply_canonical_per_axis_orders,
     cell_aggregate_to_display_matrix,
-    enforce_axis_lower_triangle_inplace,
     reindex_matrix_to_structure_order,
 )
-from ..core.models import (
+from ..core.axis_models import (
     AXIS_ANTERIOR_POSTERIOR,
     AXIS_MEDIOLATERAL,
     AXIS_VERTICAL,
@@ -265,9 +264,9 @@ class PosetViewer(QWidget):
         # When merged, each axis matrix may use a different CoM sort; labels per tab:
         self._structures_ml: Optional[List[Structure]] = None
         self._structures_ap: Optional[List[Structure]] = None
-        self._M_vertical: List[List[int]] = []
-        self._M_mediolateral: List[List[int]] = []
-        self._M_anteroposterior: List[List[int]] = []
+        self._M_vertical: List[List[Union[int, float]]] = []
+        self._M_mediolateral: List[List[Union[int, float]]] = []
+        self._M_anteroposterior: List[List[Union[int, float]]] = []
         self._merged_mode: bool = False
         self._merge_k: int = 0
         self._agg_vertical: Optional[List[List[CellAggregate]]] = None
@@ -295,9 +294,9 @@ class PosetViewer(QWidget):
         )
         self._feedback_btn.clicked.connect(self._open_feedback_file)
         toolbar.addWidget(self._feedback_btn)
-        self._save_merged_btn = QPushButton("Save merged consensus…")
+        self._save_merged_btn = QPushButton("Save merged probability…")
         self._save_merged_btn.setToolTip(
-            "Export consensus tri-valued matrices (majority vote per cell) to one JSON file. "
+            "Export merged probability matrices (P(yes) per cell) to one JSON file. "
             "Structures are in vertical CoM order; ML/AP matrices are reindexed to match."
         )
         self._save_merged_btn.setEnabled(False)
@@ -488,18 +487,18 @@ class PosetViewer(QWidget):
         self._rebuild_tabs()
 
     def _save_merged_consensus_json(self) -> None:
-        """Write consensus {-2,-1,0,+1} matrices to JSON; loadable like a normal poset file."""
+        """Write merged probability matrices (P(yes)) to JSON."""
         if not self._merged_mode or not self._structures:
             QMessageBox.information(
                 self,
                 "Save merged",
-                "Merge at least two JSON files first; then you can save the consensus.",
+                "Merge at least two JSON files first; then you can save the probability matrix.",
             )
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save merged consensus poset",
-            str(OUTPUT_DIR / "merged_consensus.json"),
+            "Save merged probability matrix",
+            str(OUTPUT_DIR / "merged_probability.json"),
             "JSON (*.json);;All Files (*)",
         )
         if not path:
@@ -520,7 +519,7 @@ class PosetViewer(QWidget):
                 ml_save,
                 ap_save,
                 extra={
-                    "merged_consensus": True,
+                    "merged_probability_matrix": True,
                     "merged_from_raters": self._merge_k,
                     "merged_source_files": self._path,
                 },
@@ -532,7 +531,6 @@ class PosetViewer(QWidget):
                 f"Could not save:\n{exc}",
             )
             return
-        QMessageBox.information(self, "Saved", f"Merged consensus saved to:\n{path}")
 
     def _structures_for_tab(self, axis: str) -> List[Structure]:
         """Row/column label order for this axis (merged: per-axis CoM sort; else shared list)."""
@@ -602,18 +600,30 @@ class PosetViewer(QWidget):
             )
             return
         self._merge_k = k1
-        self._M_vertical = aggregate_to_consensus_matrix(self._agg_vertical)
-        enforce_axis_lower_triangle_inplace(self._M_vertical)
-        self._M_mediolateral = aggregate_to_consensus_matrix(self._agg_mediolateral)
-        enforce_axis_lower_triangle_inplace(self._M_mediolateral)
-        self._M_anteroposterior = aggregate_to_consensus_matrix(self._agg_anteroposterior)
-        enforce_axis_lower_triangle_inplace(self._M_anteroposterior)
+        self._M_vertical = aggregate_to_p_yes_matrix(self._agg_vertical)
+        self._M_mediolateral = aggregate_to_p_yes_matrix(self._agg_mediolateral)
+        self._M_anteroposterior = aggregate_to_p_yes_matrix(self._agg_anteroposterior)
         self._merged_mode = True
         self._path = " + ".join(Path(p).name for p in paths)
         self._rebuild_tabs()
 
-    def _unsure_edges_from_matrix(self, M: List[List[int]]) -> Set[Tuple[int, int]]:
-        """Directed pairs with value 0 (not sure)."""
+    def _is_probability_matrix(self, M: List[List[Union[int, float]]]) -> bool:
+        """Heuristic: any off-diagonal non-integer numeric value implies probability mode."""
+        n = len(M)
+        for i in range(n):
+            row = M[i]
+            for j in range(min(n, len(row))):
+                if i == j:
+                    continue
+                v = row[j]
+                if isinstance(v, (int, float)) and abs(float(v) - round(float(v))) > 1e-9:
+                    return True
+        return False
+
+    def _unsure_edges_from_matrix(self, M: List[List[Union[int, float]]]) -> Set[Tuple[int, int]]:
+        """Directed pairs with value 0 (discrete mode only)."""
+        if self._is_probability_matrix(M):
+            return set()
         out: Set[Tuple[int, int]] = set()
         n = len(M)
         for i in range(n):
@@ -623,18 +633,18 @@ class PosetViewer(QWidget):
                     out.add((i, j))
         return out
 
-    def _matrix_to_edges(self, M: List[List[int]]) -> Set[Tuple[int, int]]:
-        """Derive pDAG edges (all +1 entries) from a tri-valued matrix."""
+    def _matrix_to_edges(self, M: List[List[Union[int, float]]]) -> Set[Tuple[int, int]]:
+        """Derive pDAG edges from matrix (discrete +1, probability p==1.0)."""
         edges: Set[Tuple[int, int]] = set()
         n = len(M)
         for i in range(n):
             row = M[i]
             for j in range(min(n, len(row))):
-                if i != j and row[j] == 1:
+                if i != j and isinstance(row[j], (int, float)) and float(row[j]) >= 1.0 - 1e-9:
                     edges.add((i, j))
         return edges
 
-    def _matrix_summary_counts(self, M: List[List[int]]) -> Tuple[int, int, int, int]:
+    def _matrix_summary_counts(self, M: List[List[Union[int, float]]]) -> Tuple[int, int, int, int]:
         """Return counts of (+1, 0, -1, -2) entries (off-diagonal only)."""
         yes = no = unsure = not_asked = 0
         n = len(M)
@@ -654,12 +664,59 @@ class PosetViewer(QWidget):
                     not_asked += 1
         return yes, unsure, no, not_asked
 
+    def _probability_summary_counts(self, M: List[List[Union[int, float]]]) -> Tuple[int, int, int]:
+        """Return counts of (p==1, 0<p<1, p==0 or missing) off-diagonal entries."""
+        p1 = partial = zero_or_missing = 0
+        n = len(M)
+        for i in range(n):
+            row = M[i]
+            for j in range(min(n, len(row))):
+                if i == j:
+                    continue
+                v = row[j]
+                if not isinstance(v, (int, float)):
+                    zero_or_missing += 1
+                    continue
+                fv = float(v)
+                if fv >= 1.0 - 1e-9:
+                    p1 += 1
+                elif fv <= 1e-9:
+                    zero_or_missing += 1
+                else:
+                    partial += 1
+        return p1, partial, zero_or_missing
+
+    def _transitive_reduction(self, n: int, edges: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+        """Simple transitive reduction on a DAG-like edge set."""
+        adj: Dict[int, Set[int]] = {i: set() for i in range(n)}
+        for u, v in edges:
+            adj.setdefault(u, set()).add(v)
+
+        reduced: Set[Tuple[int, int]] = set()
+        for u, v in edges:
+            # Check if there is an alternate path u -> ... -> v excluding direct edge (u, v).
+            stack = [w for w in adj.get(u, set()) if w != v]
+            seen: Set[int] = set()
+            found = False
+            while stack and not found:
+                x = stack.pop()
+                if x == v:
+                    found = True
+                    break
+                if x in seen:
+                    continue
+                seen.add(x)
+                stack.extend(adj.get(x, set()))
+            if not found:
+                reduced.add((u, v))
+        return reduced
+
     def _fill_tab(
         self,
         list_widget: QListWidget,
         hasse_view: HasseDiagramView,
         structures: List[Structure],
-        M: List[List[int]],
+        M: List[List[Union[int, float]]],
         axis_label: str,
         relation_label: str,
     ) -> None:
@@ -668,7 +725,7 @@ class PosetViewer(QWidget):
             list_widget.addItem(f"Merged from {self._merge_k} file(s):")
             list_widget.addItem(f"  {self._path}")
             list_widget.addItem(
-                "Consensus matrix: majority vote per cell; ties broken by rounding the mean."
+                "Probability matrix mode: matrix entries are P(yes)=(μ+1)/2 over answered raters."
             )
         else:
             list_widget.addItem(f"Loaded from: {self._path or '(none)'}")
@@ -688,35 +745,28 @@ class PosetViewer(QWidget):
             list_widget.addItem("No matrix data available for this axis.")
             edges: Set[Tuple[int, int]] = set()
         else:
-            # Summarize matrix state
-            yes, unsure, no, not_asked = self._matrix_summary_counts(M)
-            list_widget.addItem("Matrix summary (off-diagonal entries):")
-            list_widget.addItem(f"  +1 (YES / above): {yes}")
-            list_widget.addItem(f"   0 (not sure):   {unsure}")
-            list_widget.addItem(f"  -1 (NO / not-above): {no}")
-            list_widget.addItem(f"  -2 (not asked yet): {not_asked}")
+            is_prob = self._is_probability_matrix(M)
+            if is_prob:
+                p1, partial, zero_or_missing = self._probability_summary_counts(M)
+                list_widget.addItem("Probability matrix summary (off-diagonal entries):")
+                list_widget.addItem(f"  p == 1.0 (strict edge): {p1}")
+                list_widget.addItem(f"  0 < p < 1 (partial support): {partial}")
+                list_widget.addItem(f"  p == 0 or missing: {zero_or_missing}")
+            else:
+                yes, unsure, no, not_asked = self._matrix_summary_counts(M)
+                list_widget.addItem("Matrix summary (off-diagonal entries):")
+                list_widget.addItem(f"  +1 (YES / above): {yes}")
+                list_widget.addItem(f"   0 (not sure):   {unsure}")
+                list_widget.addItem(f"  -1 (NO / not-above): {no}")
+                list_widget.addItem(f"  -2 (not asked yet): {not_asked}")
             list_widget.addItem("")
 
-            # Derive pDAG (= all +1 edges) and then Hasse edges via transitive reduction.
-            from anatomy_poset.core.builder import MatrixBuilder
-
-            if axis_label == "Vertical":
-                axis_key = AXIS_VERTICAL
-            elif axis_label == "Lateral":
-                axis_key = AXIS_MEDIOLATERAL
-            else:
-                axis_key = AXIS_ANTERIOR_POSTERIOR
-
-            mb = MatrixBuilder(structures, axis=axis_key)
-            mb.M = [row[:] for row in M]  # shallow copy
-            mb._propagate()  # ensure closure for +1 before reduction
+            # Hasse from strict edges: discrete (+1) or probability (p==1.0).
+            pdag_edges = self._matrix_to_edges(M)
             try:
-                hasse_edges = mb.get_hasse()
+                edges = self._transitive_reduction(len(structures), pdag_edges)
             except Exception:
-                # If cyclic or invalid, fall back to raw pDAG edges.
-                hasse_edges = mb.get_pdag()
-
-            edges = hasse_edges
+                edges = pdag_edges
 
             if not edges:
                 list_widget.addItem(f"No strict '{relation_label}' relations derived from matrix.")
@@ -887,6 +937,74 @@ class PosetViewer(QWidget):
         )
         dlg.show()
 
+    def _show_probability_matrix(
+        self, M: List[List[Union[int, float]]], title: str, label_structures: List[Structure]
+    ) -> None:
+        """Display a probability matrix heatmap directly from saved matrix values."""
+        if not M:
+            QMessageBox.information(self, "No data", f"No matrix data available for {title}.")
+            return
+        n = len(M)
+        Z = np.full((n, n), np.nan, dtype=float)
+        for i in range(n):
+            row = M[i]
+            for j in range(min(n, len(row))):
+                if i == j:
+                    Z[i, j] = 0.0
+                    continue
+                v = row[j]
+                if isinstance(v, (int, float)):
+                    fv = float(v)
+                    if 0.0 <= fv <= 1.0:
+                        Z[i, j] = fv
+
+        Z_masked = np.ma.masked_invalid(Z)
+        dlg = QDialog(None)
+        dlg.setWindowTitle(f"{title} — probability matrix heatmap")
+        dlg.resize(900, 700)
+        dlg.setModal(False)
+        layout = QVBoxLayout(dlg)
+
+        fig = Figure(figsize=(7, 6), tight_layout=True)
+        canvas = FigureCanvas(fig)
+        try:
+            from matplotlib.backends.backend_qt5 import NavigationToolbar2QT
+
+            layout.addWidget(NavigationToolbar2QT(canvas, dlg))
+        except Exception:
+            pass
+
+        ax = fig.add_subplot(111)
+        try:
+            from matplotlib import colormaps
+
+            cmap = colormaps["RdYlGn"].copy()
+        except Exception:
+            from matplotlib import pyplot as plt
+
+            cmap = plt.cm.get_cmap("RdYlGn").copy()
+        cmap.set_bad("#dddddd")
+        im = ax.imshow(Z_masked, cmap=cmap, vmin=0.0, vmax=1.0, origin="upper")
+
+        if len(label_structures) == n:
+            labels = [s.name for s in label_structures]
+        else:
+            labels = [str(i) for i in range(n)]
+        ax.set_xlabel("j (target structure)")
+        ax.set_ylabel("i (source structure)")
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(labels, fontsize=6, rotation=90)
+        ax.set_yticklabels(labels, fontsize=6)
+        fig.colorbar(im, ax=ax).set_label("P(yes)")
+
+        layout.addWidget(canvas, stretch=1)
+        self._matrix_windows.append(dlg)
+        dlg.destroyed.connect(
+            lambda *_: self._matrix_windows.remove(dlg) if dlg in self._matrix_windows else None
+        )
+        dlg.show()
+
     def _rebuild_tabs(self) -> None:
         self._clear_tabs()
         self._update_title_and_status()
@@ -993,11 +1111,13 @@ class PosetViewer(QWidget):
         )
         self._tabs.addTab(ap_widget, "Anteroposterior (front–back)")
 
-        # Wire matrix buttons (merged → probability heatmap; single file → discrete tri-values)
+        # Wire matrix buttons (probability matrix -> probability heatmap; else tri-valued matrix)
         def _vert_matrix() -> None:
             labs = self._structures_for_tab("Vertical")
             if self._merged_mode and self._agg_vertical is not None:
                 self._show_agg_matrix(self._agg_vertical, "Vertical axis", labs)
+            elif self._is_probability_matrix(self._M_vertical):
+                self._show_probability_matrix(self._M_vertical, "Vertical axis", labs)
             else:
                 self._show_discrete_matrix(self._M_vertical, "Vertical axis", labs)
 
@@ -1005,6 +1125,8 @@ class PosetViewer(QWidget):
             labs = self._structures_for_tab("Lateral")
             if self._merged_mode and self._agg_mediolateral is not None:
                 self._show_agg_matrix(self._agg_mediolateral, "Lateral axis", labs)
+            elif self._is_probability_matrix(self._M_mediolateral):
+                self._show_probability_matrix(self._M_mediolateral, "Lateral axis", labs)
             else:
                 self._show_discrete_matrix(self._M_mediolateral, "Lateral axis", labs)
 
@@ -1012,6 +1134,8 @@ class PosetViewer(QWidget):
             labs = self._structures_for_tab("Anteroposterior")
             if self._merged_mode and self._agg_anteroposterior is not None:
                 self._show_agg_matrix(self._agg_anteroposterior, "Anteroposterior axis", labs)
+            elif self._is_probability_matrix(self._M_anteroposterior):
+                self._show_probability_matrix(self._M_anteroposterior, "Anteroposterior axis", labs)
             else:
                 self._show_discrete_matrix(self._M_anteroposterior, "Anteroposterior axis", labs)
 

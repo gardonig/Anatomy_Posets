@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from anatomy_poset.core.aggregation import (
+from anatomy_poset.core.matrix_aggregation import (
     aggregate_matrices_with_counts,
     aggregate_to_consensus_matrix,
     align_matrix_lists_to_reference,

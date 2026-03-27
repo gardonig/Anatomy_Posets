@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .models import (
+from .axis_models import (
     AXIS_ANTERIOR_POSTERIOR,
     AXIS_MEDIOLATERAL,
     AXIS_VERTICAL,
@@ -530,12 +530,40 @@ def cell_aggregate_to_display_matrix(
     return Z, ann, tie_mask
 
 
+def aggregate_to_p_yes_matrix(agg: List[List[CellAggregate]]) -> List[List[Optional[float]]]:
+    """
+    **Probability consensus** over raters: for each directed cell, ``P(yes) = (μ + 1) / 2`` where
+    **μ** is the mean of answered codes only (``-2`` excluded per rater). Same convention as the
+    merged ``P(yes)`` heatmap and :attr:`CellAggregate.probability_yes_green`.
+
+    - Diagonal: ``0.0`` (relation −1 for self maps to ``P = 0``).
+    - Off-diagonal, no answered raters: ``None`` (JSON ``null`` when saved).
+    """
+    n = len(agg)
+    out: List[List[Optional[float]]] = [[None] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                out[i][j] = 0.0
+                continue
+            c = agg[i][j]
+            if c.n_answered == 0:
+                out[i][j] = None
+            else:
+                out[i][j] = c.probability_yes_green
+    return out
+
+
 def aggregate_to_consensus_matrix(agg: List[List[CellAggregate]]) -> List[List[int]]:
     """
-    Convert aggregated cells to a tri-valued matrix for Hasse / PDAG visualization.
+    **Discrete** tri-valued matrix for Hasse / PDAG and MatrixBuilder-compatible JSON.
 
-    Majority vote on {-1, 0, +1}; ties broken by rounding the mean. Diagonal is -1;
-    cells with no answers are -2.
+    **Plurality vote** on ``{-1, 0, +1}`` among answered raters; **ties** use **rounded mean**
+    (clamped to ``{-1, 0, 1}``). This is **not** the same as :func:`aggregate_to_p_yes_matrix`;
+    use the ``matrix_*_p_yes`` fields in merged saves for probability consensus without vote
+    rounding.
+
+    Diagonal is ``-1``; cells with no answers are ``-2``.
     """
     n = len(agg)
     M: List[List[int]] = [[-2] * n for _ in range(n)]

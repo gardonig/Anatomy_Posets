@@ -7,8 +7,8 @@ import pytest
 
 from helpers import create_mock_structures
 
-from src.anatomy_poset.core.builder import MatrixBuilder
-from src.anatomy_poset.core.models import AXIS_VERTICAL, Structure
+from src.anatomy_poset.core.matrix_builder import MatrixBuilder
+from src.anatomy_poset.core.axis_models import AXIS_VERTICAL, Structure
 
 
 def test_matrix_builder_sorting_inherited() -> None:

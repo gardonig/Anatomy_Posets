@@ -21,10 +21,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.builder import MatrixBuilder
+from ..core.matrix_builder import MatrixBuilder
 from ..core.config import INPUT_DIR, OUTPUT_DIR
 from ..core.io import load_structures_from_json, load_poset_from_json, save_poset_to_json
-from ..core.models import (
+from ..core.axis_models import (
     AXIS_ANTERIOR_POSTERIOR,
     AXIS_MEDIOLATERAL,
     AXIS_VERTICAL,

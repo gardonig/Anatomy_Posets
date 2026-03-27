@@ -14,8 +14,8 @@ _ensure_qt_platform_plugin_path()
 
 from PySide6.QtWidgets import QApplication
 from anatomy_poset.gui.main_window import MainWindow
-from anatomy_poset.core.builder import MatrixBuilder
-from anatomy_poset.core.models import AXIS_VERTICAL
+from anatomy_poset.core.matrix_builder import MatrixBuilder
+from anatomy_poset.core.axis_models import AXIS_VERTICAL
 from anatomy_poset.gui.query_dialog import QueryDialog
 
 
