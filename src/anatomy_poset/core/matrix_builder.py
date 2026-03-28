@@ -5,6 +5,27 @@ from typing import Dict, List, Optional, Set, Tuple
 from .axis_models import AXIS_ANTERIOR_POSTERIOR, AXIS_MEDIOLATERAL, AXIS_VERTICAL, Structure
 
 
+def initial_tri_valued_relation_matrix(n: int) -> List[List[int]]:
+    """
+    Default ``n×n`` tri-valued matrix for structures already sorted by axis CoM **descending**
+    (same convention as :class:`MatrixBuilder`).
+
+    - **Diagonal and strict lower triangle** (`j < i`): ``-1`` (CoM prior: row ``i`` cannot be
+      strictly above column ``j`` when CoMs strictly decrease with index).
+    - **Strict upper triangle** (`j > i`): ``-2`` (not asked yet).
+
+    Expert queries only need to fill the strict upper triangle; the rest is prior or derived.
+    """
+    if n < 0:
+        raise ValueError("n must be non-negative")
+    M = [[-2 for _ in range(n)] for _ in range(n)]
+    for i in range(n):
+        M[i][i] = -1
+        for j in range(i):
+            M[i][j] = -1
+    return M
+
+
 def _parse_bilateral_core(name: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Detect side (Left/Right) and core name for bilateral structures.
@@ -38,9 +59,14 @@ class MatrixBuilder:
         M[i][j] = -1  -> "i is not strictly above j" (NO / overlap / opposite)
         M[i][j] = -2  -> not asked yet
 
-    At construction, structures are sorted by axis CoM (descending). The lower
-    triangle (i > j) and diagonal are set to -1; only the strict upper triangle
-    starts as -2. Equal-CoM pairs are completed by _apply_com_not_above_prior().
+    At construction, structures are sorted by axis CoM (descending). The matrix is
+    initialized with :func:`initial_tri_valued_relation_matrix` (diagonal and strict
+    lower triangle ``-1``, strict upper triangle ``-2``). Equal-CoM pairs are
+    completed by ``_apply_com_not_above_prior()``.
+
+    :meth:`next_pair` only returns pairs with ``i < j`` (strict upper triangle): the
+    expert is never asked about cells on or below the diagonal. Propagation may still
+    write the inverse direction (e.g. ``M[j][i]``) for consistency with ``+1`` / ``0``.
 
     The underlying DAG used for Hasse diagrams is still derived solely from
     the +1 entries; the matrix simply preserves richer annotation state.
@@ -97,17 +123,9 @@ class MatrixBuilder:
         self.finished = self.n <= 1
 
         self._query_allowed_indices: Optional[Set[int]] = query_allowed_indices
-        # Structures are sorted by this axis CoM descending.
-        # M[i][j] = "i strictly above j". For i > j, structure i has lower (or equal) CoM than j,
-        # so i cannot be strictly above j when CoMs differ; lower triangle is prefilled -1.
-        # Upper triangle (i < j) stays -2 (still to ask / infer). Diagonal: -1.
-        # Equal-CoM pairs get both directions closed via _apply_com_not_above_prior().
+        # M[i][j] = "i strictly above j". See initial_tri_valued_relation_matrix.
         n = self.n
-        self.M = [[-2 for _ in range(n)] for _ in range(n)]
-        for i in range(n):
-            self.M[i][i] = -1
-            for j in range(i):
-                self.M[i][j] = -1
+        self.M = initial_tri_valued_relation_matrix(n)
 
         # Cache CoM values for fast constraint checks.
         if self.axis == AXIS_MEDIOLATERAL:
@@ -331,6 +349,9 @@ class MatrixBuilder:
         +1 -> i above j
          0 -> not sure
         -1 -> i not strictly above j
+
+        The query UI only asks pairs with ``i < j``; bilateral mirroring may call this
+        with other indices, and propagation updates inverse cells as needed.
         """
         if value not in (-1, 0, 1):
             raise ValueError(f"Invalid relation value {value}; expected -1, 0, or +1.")
@@ -481,9 +502,12 @@ class MatrixBuilder:
     # ---- Query iteration using M ----
     def next_pair(self) -> Tuple[int, int] | None:
         """
-        Gap-based iteration:
-        - skips pairs where M[i][j] != -2 (already answered)
-        - skips pairs whose relation is implied by transitivity on +1
+        Gap-based iteration over **strict upper triangle** only: every candidate has
+        ``i < j`` (row = higher CoM index, column = lower). Never elicits diagonal or
+        lower-triangle cells.
+
+        - Skips pairs where ``M[i][j] != -2`` (already answered).
+        - Skips pairs whose relation is implied by transitivity on ``+1``.
         """
         if self.finished:
             return None

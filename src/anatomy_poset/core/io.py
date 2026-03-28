@@ -1,12 +1,29 @@
 import json
-from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Union
 
 from .axis_models import Structure
 
+
+@dataclass
+class PosetFromJson:
+    """Payload from :func:`load_poset_from_json` (structures + per-axis matrices)."""
+
+    structures: List[Structure]
+    matrix_vertical: List[List[Union[int, float]]]
+    matrix_mediolateral: List[List[Union[int, float]]]
+    matrix_anteroposterior: List[List[Union[int, float]]]
+    n_answered_vertical: Optional[List[List[Optional[int]]]] = None
+    n_answered_mediolateral: Optional[List[List[Optional[int]]]] = None
+    n_answered_anteroposterior: Optional[List[List[Optional[int]]]] = None
+    n_notasked_vertical: Optional[List[List[Optional[int]]]] = None
+    n_notasked_mediolateral: Optional[List[List[Optional[int]]]] = None
+    n_notasked_anteroposterior: Optional[List[List[Optional[int]]]] = None
+
+
 def load_structures_from_json(path: str) -> List[Structure]:
     """
-    Load a list of structures from a JSON file.
+    Load a list of structures from JSON.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -30,6 +47,7 @@ def load_structures_from_json(path: str) -> List[Structure]:
         )
     return structures
 
+
 def save_poset_to_json(
     path: str,
     structures: List[Structure],
@@ -37,21 +55,24 @@ def save_poset_to_json(
     matrix_mediolateral: Optional[List[List[Union[int, float, None]]]] = None,
     matrix_anteroposterior: Optional[List[List[Union[int, float, None]]]] = None,
     *,
-    matrix_vertical_p_yes: Optional[List[List[Optional[float]]]] = None,
-    matrix_mediolateral_p_yes: Optional[List[List[Optional[float]]]] = None,
-    matrix_anteroposterior_p_yes: Optional[List[List[Optional[float]]]] = None,
+    matrix_vertical_n_answered: Optional[List[List[Optional[int]]]] = None,
+    matrix_vertical_n_notasked: Optional[List[List[Optional[int]]]] = None,
+    matrix_mediolateral_n_answered: Optional[List[List[Optional[int]]]] = None,
+    matrix_mediolateral_n_notasked: Optional[List[List[Optional[int]]]] = None,
+    matrix_anteroposterior_n_answered: Optional[List[List[Optional[int]]]] = None,
+    matrix_anteroposterior_n_notasked: Optional[List[List[Optional[int]]]] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Save relation matrices to JSON. All axes stored in one file.
 
-    Matrix values may be either:
-    - tri-valued entries in {-2, -1, 0, +1}, or
-    - probability entries in [0, 1] with ``null`` for unanswered cells.
+    Matrix values may be tri-valued ``{-2,-1,0,+1}`` or probability cells in ``[0,1]`` with
+    ``null`` for unanswered cells.
 
-    Optional ``matrix_*_p_yes``: merged **probability consensus** (``P(yes) ∈ [0, 1]`` or
-    ``null`` where no rater answered that cell), same convention as ``(μ+1)/2`` over answered
-    codes only. Omitted when not provided.
+    Optional ``matrix_*_n_answered`` / ``matrix_*_n_notasked``: per-cell merge statistics
+    (integers or JSON ``null``) aligned with the same indexing as ``matrix_*``. For merged
+    probability saves, ``n_answered`` is the **effective weight sum** (Σw) used when merging,
+    not only the file count. Omitted when not provided.
 
     ``extra`` is merged into the top-level JSON object (e.g. merge metadata).
     """
@@ -61,39 +82,47 @@ def save_poset_to_json(
         matrix_anteroposterior = []
 
     payload: Dict[str, Any] = {
-        "structures": [asdict(s) for s in structures],
+        "structures": [
+            {
+                "name": s.name,
+                "com_vertical": s.com_vertical,
+                "com_lateral": s.com_lateral,
+                "com_anteroposterior": s.com_anteroposterior,
+            }
+            for s in structures
+        ],
         "matrix_vertical": matrix_vertical,
         "matrix_mediolateral": matrix_mediolateral,
         "matrix_anteroposterior": matrix_anteroposterior,
     }
-    if matrix_vertical_p_yes is not None:
-        payload["matrix_vertical_p_yes"] = matrix_vertical_p_yes
-    if matrix_mediolateral_p_yes is not None:
-        payload["matrix_mediolateral_p_yes"] = matrix_mediolateral_p_yes
-    if matrix_anteroposterior_p_yes is not None:
-        payload["matrix_anteroposterior_p_yes"] = matrix_anteroposterior_p_yes
+    if matrix_vertical_n_answered is not None:
+        payload["matrix_vertical_n_answered"] = matrix_vertical_n_answered
+    if matrix_vertical_n_notasked is not None:
+        payload["matrix_vertical_n_notasked"] = matrix_vertical_n_notasked
+    if matrix_mediolateral_n_answered is not None:
+        payload["matrix_mediolateral_n_answered"] = matrix_mediolateral_n_answered
+    if matrix_mediolateral_n_notasked is not None:
+        payload["matrix_mediolateral_n_notasked"] = matrix_mediolateral_n_notasked
+    if matrix_anteroposterior_n_answered is not None:
+        payload["matrix_anteroposterior_n_answered"] = matrix_anteroposterior_n_answered
+    if matrix_anteroposterior_n_notasked is not None:
+        payload["matrix_anteroposterior_n_notasked"] = matrix_anteroposterior_n_notasked
     if extra:
         payload.update(extra)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-def load_poset_from_json(
-    path: str,
-) -> Tuple[
-    List[Structure],
-    List[List[Union[int, float]]],
-    List[List[Union[int, float]]],
-    List[List[Union[int, float]]],
-]:
+
+def load_poset_from_json(path: str) -> PosetFromJson:
     """
     Load poset(s) from JSON.
-    Returns:
-      (structures, M_vertical, M_mediolateral, M_anteroposterior)
+
+    Returns a :class:`PosetFromJson` with optional ``n_answered_*`` / ``n_notasked_*`` matrices
+    when present in the file (merged saves).
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     structures_data = data.get("structures", [])
-    # New schema: tri-valued matrices per axis
     M_v = data.get("matrix_vertical")
     M_ml = data.get("matrix_mediolateral")
     M_ap = data.get("matrix_anteroposterior")
@@ -122,10 +151,8 @@ def load_poset_from_json(
         """
         Backward compat: build a tri-valued matrix from older edge/adjaency-only files.
         """
-        # Prefer explicit adjacency if present
         adj = data.get(key_adj)
         if isinstance(adj, list) and all(isinstance(row, list) for row in adj):
-            # Normalize entries: >0 -> +1, else 0 (unknown)
             mat = [[0 for _ in range(n)] for _ in range(n)]
             for i in range(min(n, len(adj))):
                 row = adj[i]
@@ -144,16 +171,13 @@ def load_poset_from_json(
                 mat[u][v] = 1
         return mat
 
-    # If new matrices are present, use them; otherwise derive from old fields.
     if M_v is None:
         M_v = _fallback_matrix_from_edges("edges_vertical", "adjacency_vertical")
     if M_ml is None:
-        # Backward compat: older files used edges_frontal for left-right axis
         M_ml = _fallback_matrix_from_edges("edges_mediolateral", "adjacency_mediolateral")
     if M_ap is None:
         M_ap = _fallback_matrix_from_edges("edges_anteroposterior", "adjacency_anteroposterior")
 
-    # Ensure matrices are n x n with ints
     def _normalize_matrix(M: list) -> List[List[Union[int, float]]]:
         mat: List[List[Union[int, float]]] = [[-2 for _ in range(n)] for _ in range(n)]
         has_probability = False
@@ -181,20 +205,46 @@ def load_poset_from_json(
                         mat[i][j] = -2
                 except (TypeError, ValueError):
                     mat[i][j] = -2
-        # Diagonal convention depends on matrix kind:
-        # - discrete: explicit NO (-1)
-        # - probability: P(self above self) = 0.0
         for i in range(n):
             mat[i][i] = 0.0 if has_probability else -1
+        return mat
+
+    def _normalize_count_matrix(M: Any) -> Optional[List[List[Optional[int]]]]:
+        if not isinstance(M, list):
+            return None
+        mat: List[List[Optional[int]]] = [[None] * n for _ in range(n)]
+        for i in range(min(n, len(M))):
+            row = M[i]
+            if not isinstance(row, list):
+                continue
+            for j in range(min(n, len(row))):
+                raw = row[j]
+                if raw is None:
+                    mat[i][j] = None
+                else:
+                    try:
+                        mat[i][j] = int(raw)
+                    except (TypeError, ValueError):
+                        mat[i][j] = None
         return mat
 
     M_v_norm = _normalize_matrix(M_v)
     M_ml_norm = _normalize_matrix(M_ml)
     M_ap_norm = _normalize_matrix(M_ap)
 
-    return (
-        structures,
-        M_v_norm,
-        M_ml_norm,
-        M_ap_norm,
+    return PosetFromJson(
+        structures=structures,
+        matrix_vertical=M_v_norm,
+        matrix_mediolateral=M_ml_norm,
+        matrix_anteroposterior=M_ap_norm,
+        n_answered_vertical=_normalize_count_matrix(data.get("matrix_vertical_n_answered")),
+        n_answered_mediolateral=_normalize_count_matrix(data.get("matrix_mediolateral_n_answered")),
+        n_answered_anteroposterior=_normalize_count_matrix(
+            data.get("matrix_anteroposterior_n_answered")
+        ),
+        n_notasked_vertical=_normalize_count_matrix(data.get("matrix_vertical_n_notasked")),
+        n_notasked_mediolateral=_normalize_count_matrix(data.get("matrix_mediolateral_n_notasked")),
+        n_notasked_anteroposterior=_normalize_count_matrix(
+            data.get("matrix_anteroposterior_n_notasked")
+        ),
     )

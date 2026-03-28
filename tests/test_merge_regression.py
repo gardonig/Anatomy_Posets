@@ -30,15 +30,19 @@ _MERGED = _DATA / "merged_consensus_5_6.json"
 
 @pytest.mark.skipif(not _MERGED.is_file(), reason="merged_consensus_5_6.json not present")
 def test_merge_test5_test6_matches_saved_merged_consensus() -> None:
-    st5, mv5, ml5, ap5 = load_poset_from_json(str(_P5))
-    st6, mv6, ml6, ap6 = load_poset_from_json(str(_P6))
+    p5 = load_poset_from_json(str(_P5))
+    p6 = load_poset_from_json(str(_P6))
+    st5, mv5, ml5, ap5 = p5.structures, p5.matrix_vertical, p5.matrix_mediolateral, p5.matrix_anteroposterior
+    st6, mv6, ml6, ap6 = p6.structures, p6.matrix_vertical, p6.matrix_mediolateral, p6.matrix_anteroposterior
 
-    ok, msg, mv_a, ml_a, ap_a = align_matrix_lists_to_reference(
+    ok, msg, mv_a, ml_a, ap_a, _, _, _ = align_matrix_lists_to_reference(
         [st5, st6], [mv5, mv6], [ml5, ml6], [ap5, ap6]
     )
     assert ok, msg
 
-    sv, sml, sap, mv_ord, ml_ord, ap_ord = apply_canonical_per_axis_orders(st5, mv_a, ml_a, ap_a)
+    sv, sml, sap, mv_ord, ml_ord, ap_ord, _, _, _ = apply_canonical_per_axis_orders(
+        st5, mv_a, ml_a, ap_a
+    )
 
     def merged_p_yes(mats: list) -> list:
         agg, _k = aggregate_matrices_with_counts(mats)
@@ -63,13 +67,15 @@ def test_manual_vertical_cell_counts_match_aggregate() -> None:
     if not _P5.is_file() or not _P6.is_file():
         pytest.skip("test5/test6 JSON not present")
 
-    st5, mv5, ml5, ap5 = load_poset_from_json(str(_P5))
-    st6, mv6, ml6, ap6 = load_poset_from_json(str(_P6))
-    ok, msg, mv_a, ml_a, ap_a = align_matrix_lists_to_reference(
+    p5 = load_poset_from_json(str(_P5))
+    p6 = load_poset_from_json(str(_P6))
+    st5, mv5, ml5, ap5 = p5.structures, p5.matrix_vertical, p5.matrix_mediolateral, p5.matrix_anteroposterior
+    st6, mv6, ml6, ap6 = p6.structures, p6.matrix_vertical, p6.matrix_mediolateral, p6.matrix_anteroposterior
+    ok, msg, mv_a, ml_a, ap_a, _, _, _ = align_matrix_lists_to_reference(
         [st5, st6], [mv5, mv6], [ml5, ml6], [ap5, ap6]
     )
     assert ok, msg
-    _, _, _, mv_ord, _, _ = apply_canonical_per_axis_orders(st5, mv_a, ml_a, ap_a)
+    _, _, _, mv_ord, _, _, _, _, _ = apply_canonical_per_axis_orders(st5, mv_a, ml_a, ap_a)
     agg, k = aggregate_matrices_with_counts(mv_ord)
     assert k == 2
     p = aggregate_to_p_yes_matrix(agg)

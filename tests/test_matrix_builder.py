@@ -7,7 +7,7 @@ import pytest
 
 from helpers import create_mock_structures
 
-from src.anatomy_poset.core.matrix_builder import MatrixBuilder
+from src.anatomy_poset.core.matrix_builder import MatrixBuilder, initial_tri_valued_relation_matrix
 from src.anatomy_poset.core.axis_models import AXIS_VERTICAL, Structure
 
 
@@ -32,6 +32,30 @@ def test_matrix_initialization_lower_triangle_and_diagonal() -> None:
             assert mb.M[i][j] == -1
         for j in range(i + 1, n):
             assert mb.M[i][j] == -2
+
+
+def test_initial_tri_valued_relation_matrix_shape() -> None:
+    for n in (0, 1, 4):
+        M = initial_tri_valued_relation_matrix(n)
+        assert len(M) == n
+        for i in range(n):
+            assert len(M[i]) == n
+            assert M[i][i] == -1
+            for j in range(i):
+                assert M[i][j] == -1
+            for j in range(i + 1, n):
+                assert M[i][j] == -2
+
+
+def test_next_pair_only_upper_triangle() -> None:
+    """Gap iterator always has i < j (strict upper triangle in CoM index order)."""
+    mb = MatrixBuilder(create_mock_structures(), axis=AXIS_VERTICAL)
+    for _ in range(50):
+        p = mb.next_pair()
+        if p is None:
+            break
+        i, j = p
+        assert i < j
 
 
 def test_matrix_equal_com_prefills_both_directions() -> None:

@@ -5,6 +5,8 @@ from typing import List, Tuple
 from anatomy_poset.core.matrix_aggregation import (
     CellAggregate,
     aggregate_matrices_with_counts,
+    aggregate_to_n_answered_matrix,
+    aggregate_to_n_notasked_matrix,
     aggregate_to_p_yes_matrix,
     align_matrix_lists_to_reference,
     apply_canonical_per_axis_orders,
@@ -70,7 +72,7 @@ def test_align_reordered_structures() -> None:
     m_other = [[-1, 1], [0, -1]]  # rows/cols in B,A order
     perm, err = find_alignment_permutation(ref, other)
     assert perm == [1, 0], err
-    ok, msg, v, ml, ap = align_matrix_lists_to_reference(
+    ok, msg, v, ml, ap, _, _, _ = align_matrix_lists_to_reference(
         [ref, other], [m_ref, m_other], [m_ref, m_other], [m_ref, m_other]
     )
     assert ok, msg
@@ -81,7 +83,7 @@ def test_canonical_vertical_no_plus_one_below_diagonal() -> None:
     """Mis-ordered structures can put +1 below diagonal; per-axis canonical + seal fixes."""
     ref = [_struct("A", 1, 0, 0), _struct("B", 2, 0, 0)]  # not vertically sorted
     m = [[-1, 0], [1, -1]]  # +1 at [1][0] (below diagonal) — invalid until reordered
-    sv, _, _, mv, _, _ = apply_canonical_per_axis_orders(ref, [m], [m], [m])
+    sv, _, _, mv, _, _, _, _, _ = apply_canonical_per_axis_orders(ref, [m], [m], [m])
     assert sv[0].name == "B" and sv[1].name == "A"
     assert mv[0][1][0] == -1  # sealed lower triangle on vertical matrix
 
@@ -90,7 +92,7 @@ def test_enforce_vertical_seals_even_when_already_sorted() -> None:
     """Stale JSON can have +1 below diagonal even when structure list is CoM-sorted."""
     st = [_struct("B", 2, 0, 0), _struct("A", 1, 0, 0)]
     m = [[-1, 1], [1, -1]]  # [1][0] invalid +1 below diagonal
-    _, _, _, mv, _, _ = apply_canonical_per_axis_orders(st, [m], [m], [m])
+    _, _, _, mv, _, _, _, _, _ = apply_canonical_per_axis_orders(st, [m], [m], [m])
     assert mv[0][1][0] == -1
 
 
@@ -112,7 +114,7 @@ def test_per_axis_canonical_orders_differ() -> None:
         _struct("B", 50.0, 50.0, 0.0),
     ]
     identity = [[-1, -2], [-2, -1]]
-    sv, sml, _, _, _, _ = apply_canonical_per_axis_orders(s, [identity], [identity], [identity])
+    sv, sml, _, _, _, _, _, _, _ = apply_canonical_per_axis_orders(s, [identity], [identity], [identity])
     assert sv[0].name == "A"  # higher vertical CoM
     assert sml[0].name == "B"  # higher lateral CoM
 
@@ -142,6 +144,7 @@ def test_aggregate_counts_and_mean() -> None:
     assert k == 2
     c = agg[0][1]
     assert c.n_answered == 2
+    assert c.answer_weight == 2
     assert c.mean == 0.0
     assert c.counts[1] == 1 and c.counts[-1] == 1
 
@@ -153,6 +156,7 @@ def test_aggregate_notasked_minus2() -> None:
     c = agg[0][1]
     assert c.n_notasked == 1
     assert c.n_answered == 1
+    assert c.answer_weight == 1
     assert c.mean == 1.0
 
 
@@ -164,9 +168,9 @@ def test_aggregate_mean_only_matches_float_mean() -> None:
 
 
 def test_probability_green() -> None:
-    c = CellAggregate(mean=1.0, n_answered=1, n_notasked=0, counts={1: 1})
+    c = CellAggregate(mean=1.0, n_answered=1, n_notasked=0, counts={1: 1}, answer_weight=1)
     assert c.probability_yes_green == 1.0
-    c2 = CellAggregate(mean=-1.0, n_answered=1, n_notasked=0, counts={-1: 1})
+    c2 = CellAggregate(mean=-1.0, n_answered=1, n_notasked=0, counts={-1: 1}, answer_weight=1)
     assert c2.probability_yes_green == 0.0
 
 
@@ -241,3 +245,74 @@ def test_merge_two_probability_summaries_with_nulls() -> None:
     assert abs(p[0][1] - 0.75) < 1e-9
     # (1,0): only first file answered -> P = 0.5
     assert abs(p[1][0] - 0.5) < 1e-9
+
+
+def test_merge_probability_summaries_use_saved_answer_weights() -> None:
+    """P=0 (μ=-1) with weight 10 vs P=1 (μ=+1) with weight 1 → weighted μ = -9/11."""
+    m1 = [[0.0, 0.0], [0.5, 0.0]]
+    m2 = [[0.0, 1.0], [-2, 0.0]]
+    w1 = [[None, 10], [None, None]]
+    w2 = [[None, None], [None, None]]
+    agg, k = aggregate_matrices_with_counts([m1, m2], answer_weight_grids=[w1, w2])
+    assert k == 2
+    assert agg[0][1].answer_weight == 11
+    assert agg[0][1].n_answered == 2
+    mu = agg[0][1].mean
+    assert abs(mu - (-9.0 / 11.0)) < 1e-9
+    p = aggregate_to_p_yes_matrix(agg)
+    assert abs(p[0][1] - (1.0 / 11.0)) < 1e-9
+    na = aggregate_to_n_answered_matrix(agg)
+    assert na[0][1] == 11
+
+
+def test_tri_valued_merge_respects_answer_weight_grids() -> None:
+    """Tri-valued cells use the same per-file weights (e.g. replayed cohort size)."""
+    m1 = [[-1, 1], [-1, -1]]
+    m2 = [[-1, -1], [1, -1]]
+    w1 = [[None, 3], [None, None]]
+    w2 = [[None, None], [None, None]]
+    agg, _ = aggregate_matrices_with_counts([m1, m2], answer_weight_grids=[w1, w2])
+    c = agg[0][1]
+    assert c.n_answered == 2
+    assert c.answer_weight == 4
+    assert c.counts[1] == 3 and c.counts[-1] == 1
+    assert abs(c.mean - 0.5) < 1e-9
+
+
+def test_n_answered_and_notasked_grids_match_aggregate() -> None:
+    """Saved-style count matrices reflect CellAggregate per-cell tallies."""
+    m1 = [[-1, -2], [-2, -1]]
+    m2 = [[-1, 0], [0, -1]]
+    agg, k = aggregate_matrices_with_counts([m1, m2])
+    na = aggregate_to_n_answered_matrix(agg)
+    nn = aggregate_to_n_notasked_matrix(agg)
+    assert k == 2
+    assert na[0][0] == 2 and na[1][1] == 2
+    assert na[0][1] == 1 and nn[0][1] == 1
+
+
+def test_save_load_roundtrip_count_matrices(tmp_path) -> None:
+    from anatomy_poset.core.io import load_poset_from_json, save_poset_to_json
+
+    s = [_struct("A", 1, 0, 0), _struct("B", 2, 0, 0)]
+    mv = [[-1, 1], [-1, -1]]
+    nv = [[2, 1], [2, 2]]
+    nnv = [[0, 1], [0, 0]]
+    path = tmp_path / "poset.json"
+    save_poset_to_json(
+        str(path),
+        s,
+        mv,
+        mv,
+        mv,
+        matrix_vertical_n_answered=nv,
+        matrix_vertical_n_notasked=nnv,
+        matrix_mediolateral_n_answered=nv,
+        matrix_mediolateral_n_notasked=nnv,
+        matrix_anteroposterior_n_answered=nv,
+        matrix_anteroposterior_n_notasked=nnv,
+    )
+    loaded = load_poset_from_json(str(path))
+    assert loaded.n_answered_vertical == nv
+    assert loaded.n_notasked_vertical == nnv
+    assert loaded.n_answered_mediolateral == nv

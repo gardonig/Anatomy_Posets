@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.matrix_builder import MatrixBuilder
+from ..core.matrix_builder import MatrixBuilder, initial_tri_valued_relation_matrix
 from ..core.config import INPUT_DIR, OUTPUT_DIR
 from ..core.io import load_structures_from_json, load_poset_from_json, save_poset_to_json
 from ..core.axis_models import (
@@ -187,10 +187,11 @@ class MainWindow(QMainWindow):
             self._autosave_path = self._builtposet_output_path(Path(load_path))
             try:
                 # Try to load a full poset file (structures + edges for all axes)
-                structures, ev, em, ea = load_poset_from_json(load_path)
-                self._edges_vertical = ev
-                self._edges_mediolateral = em
-                self._edges_anteroposterior = ea
+                poset = load_poset_from_json(load_path)
+                self._edges_vertical = poset.matrix_vertical
+                self._edges_mediolateral = poset.matrix_mediolateral
+                self._edges_anteroposterior = poset.matrix_anteroposterior
+                structures = poset.structures
             except Exception:
                 # Fall back to simple structures-only JSON
                 try:
@@ -235,10 +236,7 @@ class MainWindow(QMainWindow):
                     for i in range(n):
                         mat[i][i] = -1
                     return mat
-                out = [[-2 for _ in range(n)] for _ in range(n)]
-                for i in range(n):
-                    out[i][i] = -1
-                return out
+                return initial_tri_valued_relation_matrix(n)
 
             if not hasattr(self, "_matrix_vertical"):
                 self._matrix_vertical: List[List[int]] = ensure_matrix([])
@@ -279,11 +277,12 @@ class MainWindow(QMainWindow):
             return
         try:
             # Prefer a full poset file if it exists (structures + matrices per axis)
-            structures, Mv, Mml, Map = load_poset_from_json(path)
+            poset = load_poset_from_json(path)
             # Store matrices for downstream querying; edge sets are now derived on demand.
-            self._matrix_vertical = Mv
-            self._matrix_mediolateral = Mml
-            self._matrix_anteroposterior = Map
+            self._matrix_vertical = poset.matrix_vertical
+            self._matrix_mediolateral = poset.matrix_mediolateral
+            self._matrix_anteroposterior = poset.matrix_anteroposterior
+            structures = poset.structures
         except Exception:
             try:
                 structures = load_structures_from_json(path)
@@ -437,9 +436,7 @@ class MainWindow(QMainWindow):
         # and empty matrices for all axes so subsequent queries can fill it.
         if not self._autosave_path.exists():
             n = len(structures)
-            empty = [[-2 for _ in range(n)] for _ in range(n)]
-            for i in range(n):
-                empty[i][i] = -1
+            empty = initial_tri_valued_relation_matrix(n)
             self._matrix_vertical = [row[:] for row in empty]
             self._matrix_mediolateral = [row[:] for row in empty]
             self._matrix_anteroposterior = [row[:] for row in empty]
@@ -454,14 +451,14 @@ class MainWindow(QMainWindow):
             # Existing output selected: load all three axes so we only overwrite
             # the axis currently being queried and preserve the other two.
             try:
-                loaded_structures, Mv, Mml, Map = load_poset_from_json(str(self._autosave_path))
+                poset = load_poset_from_json(str(self._autosave_path))
                 # Keep index consistency with the selected output file by using
                 # its structure ordering for continuation.
-                structures = loaded_structures
+                structures = poset.structures
 
-                self._matrix_vertical = Mv
-                self._matrix_mediolateral = Mml
-                self._matrix_anteroposterior = Map
+                self._matrix_vertical = poset.matrix_vertical
+                self._matrix_mediolateral = poset.matrix_mediolateral
+                self._matrix_anteroposterior = poset.matrix_anteroposterior
                 QMessageBox.information(
                     self,
                     "Continuing from saved file",
