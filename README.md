@@ -47,6 +47,8 @@ The poset viewer’s **Merge JSON files…** combines several saved posets that 
 5. **Hasse extraction rule**: use only edges with **`p == 1`** (strict certainty). Values in \(0 < p < 1\) are partial evidence shown in the heatmap/list summaries but not strict order edges.
 6. **Save merged** writes one JSON with **structures** in vertical-CoM order and **reindexed** mediolateral / anteroposterior probability matrices in `matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior`.
 
+**Merging two files that are already probability matrices:** Yes, if you accept the same summary rule as for raw raters but with **each file as one “observation”** per cell: cells with JSON `null` / `-2` are skipped; for each remaining file, the code uses pseudo-code `μ = 2P - 1` and averages **μ** over files with data, then `P = (μ+1)/2`. That equals the **unweighted mean of the P values** when every contributing file has a number at that cell. It is **not** equivalent to pooling all original expert answers unless you merge from raw tri-valued sessions (or store extra per-cell weights / counts).
+
 ---
 
 ## Setup

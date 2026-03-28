@@ -131,45 +131,6 @@ class MatrixBuilder:
         # is already reflected in the lower-triangle init above.
         self._apply_com_not_above_prior()
 
-    # -------- Edge / Hasse helpers (derived from ``self.edges``, synced in _propagate) --------
-    def path_exists(self, start: int, end: int, edges: Set[Tuple[int, int]] | None = None) -> bool:
-        if start == end:
-            return True
-        if edges is None:
-            edges = self.edges
-
-        adjacency: Dict[int, List[int]] = {}
-        for u, v in edges:
-            adjacency.setdefault(u, []).append(v)
-
-        stack = [start]
-        visited: Set[int] = set()
-        while stack:
-            u = stack.pop()
-            if u in visited:
-                continue
-            visited.add(u)
-            for v in adjacency.get(u, []):
-                if v == end:
-                    return True
-                if v not in visited:
-                    stack.append(v)
-        return False
-
-    def edge_redundancy_reduction(self) -> Set[Tuple[int, int]]:
-        """
-        Remove redundant edges implied by transitivity (naive O(V * E * (V + E)) algorithm).
-        This is the transitive reduction of the current directed acyclic graph and yields
-        exactly the cover relations used in the (directed) Hasse diagram.
-        """
-        reduced: Set[Tuple[int, int]] = set(self.edges)
-        for u, v in list(self.edges):
-            temp_edges = set(reduced)
-            temp_edges.discard((u, v))
-            if self.path_exists(u, v, temp_edges):
-                reduced.discard((u, v))
-        return reduced
-
     def record_skip(self, i: int, j: int) -> None:
         """
         Mark a pair as skipped outside the main matrix flow (e.g. bilateral core dedup).
@@ -178,21 +139,6 @@ class MatrixBuilder:
             return
         a, b = (i, j) if i < j else (j, i)
         self.skipped_pairs.add((a, b))
-
-    def unskip_pair(self, i: int, j: int) -> None:
-        """Remove a pair from the explicit skip set."""
-        if i == j:
-            return
-        a, b = (i, j) if i < j else (j, i)
-        self.skipped_pairs.discard((a, b))
-
-    def get_final_relations(self) -> Tuple[List[Structure], Set[Tuple[int, int]]]:
-        """
-        Run edge redundancy reduction on the current +1 graph and return structures
-        plus Hasse cover edges.
-        """
-        reduced_edges = self.edge_redundancy_reduction()
-        return self.structures, reduced_edges
 
     def estimate_remaining_questions(self) -> int:
         """
@@ -214,7 +160,7 @@ class MatrixBuilder:
 
                 if (s, t) in self.skipped_pairs:
                     continue
-                if self.path_exists(s, t):
+                if self.path_exists_matrix(s, t):
                     continue
 
                 remaining += 1
@@ -585,39 +531,6 @@ class MatrixBuilder:
         self.finished = True
         return None
 
-    def get_iteration_progress(self) -> float:
-        """
-        Progress based on how many unordered pairs {i, j} have some annotation
-        (M[i][j] != -2), 0.0 to 1.0.
-        """
-        if self.n <= 1:
-            return 1.0
-        allowed = self._query_allowed_indices
-        if allowed is None:
-            total = self.n * (self.n - 1) // 2
-            if total == 0:
-                return 1.0
-            answered = 0
-            for i in range(self.n):
-                for j in range(i + 1, self.n):
-                    if self.M[i][j] != -2:
-                        answered += 1
-            return min(1.0, answered / total)
-
-        # Progress only over unordered pairs (i<j) that could be asked (both in allowed)
-        total = 0
-        answered = 0
-        for i in range(self.n):
-            for j in range(i + 1, self.n):
-                if i not in allowed or j not in allowed:
-                    continue
-                total += 1
-                if self.M[i][j] != -2:
-                    answered += 1
-        if total == 0:
-            return 1.0
-        return min(1.0, answered / total)
-
     def restore_matrix(self, M: List[List[int]]) -> None:
         """Replace M and re-run propagation so ``edges`` and invariants stay consistent."""
         if len(M) != self.n or any(len(row) != self.n for row in M):
@@ -637,39 +550,4 @@ class MatrixBuilder:
                 if self.M[i][j] == 1 and i != j:
                     edges.add((i, j))
         return edges
-
-    def _has_cycle(self) -> bool:
-        """
-        Very simple cycle detection: check reachability from i back to i.
-        """
-        for i in range(self.n):
-            if self.path_exists_matrix(i, i):
-                return True
-        return False
-
-    def get_hasse(self) -> Set[Tuple[int, int]]:
-        """
-        Hasse diagram edges derived from the current +1 relations in M.
-        Raises if the underlying graph is cyclic.
-        """
-        if self._has_cycle():
-            raise ValueError("Cannot build Hasse diagram from cyclic graph.")
-        self.edges = self.get_pdag()
-        return self.edge_redundancy_reduction()
-
-
-def aggregate_matrices(matrices: List[List[List[int]]]) -> List[List[float]]:
-    """
-    Aggregate multiple tri-valued matrices M into an averaged weight matrix W.
-
-    For each (i, j):
-      - ignore entries where M[i][j] == -2 (never asked)
-      - otherwise, average the values across raters/sessions
-
-    See also :func:`anatomy_poset.core.matrix_aggregation.aggregate_matrices_with_counts` for counts.
-    """
-    from .matrix_aggregation import aggregate_matrices_mean_only
-
-    return aggregate_matrices_mean_only(matrices)
-
 

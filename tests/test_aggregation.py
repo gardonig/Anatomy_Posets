@@ -1,19 +1,19 @@
 """Tests for multi-rater matrix aggregation and structure compatibility."""
 
+from typing import List, Tuple
+
 from anatomy_poset.core.matrix_aggregation import (
     CellAggregate,
-    aggregate_matrices_mean_only,
     aggregate_matrices_with_counts,
-    aggregate_to_consensus_matrix,
     aggregate_to_p_yes_matrix,
     align_matrix_lists_to_reference,
     apply_canonical_per_axis_orders,
     cell_aggregate_to_display_matrix,
-    enforce_vertical_lower_triangle_inplace,
+    enforce_axis_lower_triangle_inplace,
     find_alignment_permutation,
     reindex_matrix_to_structure_order,
     structure_list_signature,
-    validate_structures_compatible,
+    structures_match_same_order,
 )
 from anatomy_poset.core.axis_models import Structure
 
@@ -22,18 +22,33 @@ def _struct(name: str, v: float = 0.0, ml: float = 0.0, ap: float = 0.0) -> Stru
     return Structure(name=name, com_vertical=v, com_lateral=ml, com_anteroposterior=ap)
 
 
+def _structure_lists_alignable(structures_list: List[List[Structure]]) -> Tuple[bool, str]:
+    """Same rule as merge pre-check: each list aligns to the first (order or permutation)."""
+    if not structures_list:
+        return False, "No structure lists provided."
+    ref = structures_list[0]
+    for idx, lst in enumerate(structures_list[1:], start=2):
+        ok, _ = structures_match_same_order(ref, lst)
+        if ok:
+            continue
+        perm, err = find_alignment_permutation(ref, lst)
+        if perm is None:
+            return False, f"List #{idx} cannot be aligned to list #1: {err}"
+    return True, ""
+
+
 def test_structure_signature_match() -> None:
     a = [_struct("A", 1, 2, 3), _struct("B", 4, 5, 6)]
     b = [_struct("A", 1, 2, 3), _struct("B", 4, 5, 6)]
     assert structure_list_signature(a) == structure_list_signature(b)
-    ok, msg = validate_structures_compatible([a, b])
+    ok, msg = _structure_lists_alignable([a, b])
     assert ok and msg == ""
 
 
 def test_structure_signature_mismatch_name() -> None:
     a = [_struct("A")]
     b = [_struct("X")]
-    ok, msg = validate_structures_compatible([a, b])
+    ok, msg = _structure_lists_alignable([a, b])
     assert not ok
     assert "name" in msg.lower() or "match" in msg.lower()
 
@@ -42,7 +57,7 @@ def test_validate_tolerant_float_json_drift() -> None:
     """Same structures; CoMs differ only by tiny float noise (JSON)."""
     a = [_struct("A", 50.123456789, 10.0, 20.0)]
     b = [_struct("A", 50.1234567890001, 10.0, 20.0)]
-    ok, msg = validate_structures_compatible([a, b])
+    ok, msg = _structure_lists_alignable([a, b])
     assert ok, msg
 
 
@@ -104,7 +119,7 @@ def test_per_axis_canonical_orders_differ() -> None:
 
 def test_enforce_vertical_inplace() -> None:
     m = [[-1, 0], [1, -1]]
-    enforce_vertical_lower_triangle_inplace(m)
+    enforce_axis_lower_triangle_inplace(m)
     assert m[1][0] == -1
 
 
@@ -144,8 +159,8 @@ def test_aggregate_notasked_minus2() -> None:
 def test_aggregate_mean_only_matches_float_mean() -> None:
     m1 = [[-1, 1], [-1, -1]]
     m2 = [[-1, 0], [0, -1]]
-    w = aggregate_matrices_mean_only([m1, m2])
-    assert w[0][1] == 0.5  # (1+0)/2
+    agg, _ = aggregate_matrices_with_counts([m1, m2])
+    assert agg[0][1].mean == 0.5  # (1+0)/2
 
 
 def test_probability_green() -> None:
@@ -165,29 +180,25 @@ def test_cell_aggregate_display_nan_no_data() -> None:
     assert math.isnan(Z[0][1])
 
 
-def test_cell_aggregate_display_majority_tie_not_mean_half() -> None:
-    """+1 vs −1 with K=2 is a vote tie — not orange "half yes" from mean-based P."""
-    import math
-
+def test_cell_aggregate_display_mean_disagreement() -> None:
+    """+1 vs −1 with K=2: mean 0 → P(yes)=0.5 (heatmap matches aggregate_to_p_yes_matrix)."""
     m1 = [[-1, 1], [-1, -1]]
     m2 = [[-1, -1], [1, -1]]
     agg, _ = aggregate_matrices_with_counts([m1, m2])
-    Z, ann, tm = cell_aggregate_to_display_matrix(agg)
-    assert math.isnan(Z[0][1])
-    assert tm[0][1]
-    assert "tie" in ann[0][1]
-
-    Zm, _, _ = cell_aggregate_to_display_matrix(agg, color_mode="mean")
-    assert Zm[0][1] == 0.5  # legacy mean map
+    Z, _, tm = cell_aggregate_to_display_matrix(agg)
+    assert abs(Z[0][1] - 0.5) < 1e-9
+    assert not tm[0][1]
 
 
-def test_consensus_majority() -> None:
+def test_p_yes_three_raters_majority_codes_mean() -> None:
+    """Three tri-valued raters: μ from codes; P = (μ+1)/2 (not plurality of {-1,0,1})."""
     m1 = [[-1, 1], [-1, -1]]
     m2 = [[-1, 1], [1, -1]]
     m3 = [[-1, -1], [-1, -1]]
     agg, _ = aggregate_matrices_with_counts([m1, m2, m3])
-    cons = aggregate_to_consensus_matrix(agg)
-    assert cons[0][1] == 1  # two +1, one -1
+    p = aggregate_to_p_yes_matrix(agg)
+    # +1, +1, -1 → μ = 1/3 → P = 2/3
+    assert abs(p[0][1] - 2.0 / 3.0) < 1e-9
 
 
 def test_p_yes_off_diagonal_mean() -> None:
@@ -207,3 +218,26 @@ def test_p_yes_none_when_no_answers() -> None:
     p = aggregate_to_p_yes_matrix(agg)
     assert p[0][1] is None
     assert p[0][0] == 0.0  # diagonal
+
+
+def test_enforce_lower_triangle_probability_seal() -> None:
+    """CoM canonicalization: probability matrices get P=0 on lower triangle, not tri-valued -1."""
+    m = [[0.0, 0.5], [0.75, 0.0]]
+    enforce_axis_lower_triangle_inplace(m)
+    assert m[1][0] == 0.0
+    assert m[0][1] == 0.5
+
+
+def test_merge_two_probability_summaries_with_nulls() -> None:
+    """
+    Merged probability JSONs: each file contributes P in [0,1]; -2 / missing = skip.
+    Two files at (0,1): P=0.5 and P=1.0 -> mean P = 0.75 (unweighted mean of P).
+    """
+    m1 = [[0.0, 0.5], [0.5, 0.0]]
+    m2 = [[0.0, 1.0], [-2, 0.0]]
+    agg, k = aggregate_matrices_with_counts([m1, m2])
+    assert k == 2
+    p = aggregate_to_p_yes_matrix(agg)
+    assert abs(p[0][1] - 0.75) < 1e-9
+    # (1,0): only first file answered -> P = 0.5
+    assert abs(p[1][0] - 0.5) < 1e-9

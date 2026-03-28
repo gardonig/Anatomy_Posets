@@ -867,7 +867,7 @@ class PosetViewer(QWidget):
         """
         # Mean-based display: P(yes)=(μ+1)/2 over answered codes only (−2 excluded per rater).
         mk = self._merge_k if self._merge_k > 0 else None
-        Z, ann, _ = cell_aggregate_to_display_matrix(agg, color_mode="mean", merge_k=mk)
+        Z, ann, _ = cell_aggregate_to_display_matrix(agg, merge_k=mk)
         n = len(Z)
         Zarr = np.asarray(Z, dtype=float)
         Z_masked = np.ma.masked_invalid(Zarr)

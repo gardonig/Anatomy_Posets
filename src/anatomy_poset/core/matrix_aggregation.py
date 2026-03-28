@@ -1,14 +1,25 @@
 """
-Aggregate multiple tri-valued relation matrices from different raters / sessions.
+Aggregate multiple relation matrices from different raters / sessions (or merged summaries).
 
-Each cell stores counts and summary statistics so disagreement is not lost.
+Inputs may be **tri-valued** ``{-2,-1,0,+1}`` and/or **probability** cells in ``[0, 1]``
+(see :func:`aggregate_matrices_with_counts`). :class:`CellAggregate` keeps per-cell
+``counts``, ``mean``, ``n_answered``, and ``n_notasked`` so raw vote detail is not dropped
+until you **project** to a single number (e.g. :func:`aggregate_to_p_yes_matrix`), which
+is a lossy summary by design.
+
+**Merge semantics:** Off-diagonal cells where **no** file contributes an answer stay
+``null`` / NaN in the saved / display P output — nothing is invented there. However,
+**canonical sort + lower-triangle sealing** overwrites geometrically forbidden cells with
+``-1`` or ``0.0`` before aggregation (that is imposed structure, not measured data).
+Merging **probability** files treats each file as one summary observation per cell, which
+does not recreate pooling all underlying raters unless you merge raw tri-valued sessions.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .axis_models import (
     AXIS_ANTERIOR_POSTERIOR,
@@ -17,8 +28,8 @@ from .axis_models import (
     Structure,
 )
 
-# n×n tri-valued matrices, one per file when batching
-TriMatricesPerFile = List[List[List[int]]]
+# n×n matrices per file: tri-valued ints in {-2,-1,0,1} and/or probability summaries in [0, 1]
+TriMatricesPerFile = List[List[List[Union[int, float]]]]
 
 # JSON round-trip and different serializers can change float bits slightly; CoMs are in [0, 100].
 _COM_RTOL = 1e-9
@@ -29,7 +40,7 @@ def structure_list_signature(structures: Sequence[Structure]) -> Tuple[Tuple[Any
     """
     Canonical tuple for compatibility: (name, v, ml, ap) per index.
 
-    Note: merge uses :func:`validate_structures_compatible`, which allows small CoM drift
+    Note: merge uses :func:`align_matrix_lists_to_reference`, which allows small CoM drift
     and optional reordering; this tuple still uses raw floats (exact equality).
     """
     return tuple(
@@ -126,7 +137,9 @@ def find_alignment_permutation(
     )
 
 
-def permute_relation_matrix(M: List[List[int]], perm: List[int]) -> List[List[int]]:
+def permute_relation_matrix(
+    M: List[List[Union[int, float]]], perm: List[int]
+) -> List[List[Union[int, float]]]:
     """
     Reindex rows/columns so structure at new index i is the former structure perm[i].
 
@@ -137,7 +150,7 @@ def permute_relation_matrix(M: List[List[int]], perm: List[int]) -> List[List[in
     as NumPy ``A[np.ix_(perm, perm)]`` when perm lists old row/col index for each new row/col).
     """
     n = len(M)
-    out = [[-2] * n for _ in range(n)]
+    out: List[List[Union[int, float]]] = [[-2] * n for _ in range(n)]
     for i in range(n):
         for j in range(n):
             out[i][j] = M[perm[i]][perm[j]]
@@ -177,8 +190,8 @@ def permutation_matrix_order_to_target(
 def reindex_matrix_to_structure_order(
     structures_target: List[Structure],
     structures_matrix_order: List[Structure],
-    M: List[List[int]],
-) -> List[List[int]]:
+    M: List[List[Union[int, float]]],
+) -> List[List[Union[int, float]]]:
     """
     ``M`` is indexed by ``structures_matrix_order`` (rows/cols); return the same
     relation matrix indexed by ``structures_target`` (same anatomical set, new order).
@@ -188,6 +201,21 @@ def reindex_matrix_to_structure_order(
     """
     perm = permutation_matrix_order_to_target(structures_target, structures_matrix_order)
     return permute_relation_matrix(M, perm)
+
+
+def reindex_count_matrix_to_structure_order(
+    structures_target: List[Structure],
+    structures_matrix_order: List[Structure],
+    M: List[List[Optional[int]]],
+) -> List[List[Optional[int]]]:
+    """Same reindexing as :func:`reindex_matrix_to_structure_order` for optional-int count grids."""
+    n = len(structures_target)
+    perm = permutation_matrix_order_to_target(structures_target, structures_matrix_order)
+    out: List[List[Optional[int]]] = [[None] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            out[i][j] = M[perm[i]][perm[j]]
+    return out
 
 
 def canonical_sort_permutation_for_axis(structures: List[Structure], axis: str) -> List[int]:
@@ -207,19 +235,34 @@ def canonical_sort_permutation_for_axis(structures: List[Structure], axis: str) 
     return [p[0] for p in indexed]
 
 
-def enforce_axis_lower_triangle_inplace(M: List[List[int]]) -> None:
-    """
-    After indices follow axis CoM descending (see :class:`MatrixBuilder`), ``i > j``
-    implies the directed relation cannot be strict ``+1``; lower triangle is -1.
-    """
+def matrix_has_float_probability_entries(M: List[List[Any]]) -> bool:
+    """True if any off-diagonal cell is a ``float`` (excludes ``bool``). Used to choose seal fill."""
     n = len(M)
     for i in range(n):
+        row = M[i]
+        for j in range(min(n, len(row))):
+            if i == j:
+                continue
+            v = row[j]
+            if isinstance(v, float) and not isinstance(v, bool):
+                return True
+    return False
+
+
+def enforce_axis_lower_triangle_inplace(M: List[List[Any]]) -> None:
+    """
+    After indices follow axis CoM descending (see :class:`MatrixBuilder`), ``i > j``
+    cannot be a strict ``+1`` relation along that axis.
+
+    - **Tri-valued** matrices: lower triangle is set to ``-1``.
+    - **Probability** matrices (any off-diagonal ``float``): lower triangle is set to ``0.0``
+      (``P = 0``), so later aggregation does not treat sealed cells as discrete ``-1`` votes.
+    """
+    n = len(M)
+    fill: Union[int, float] = 0.0 if matrix_has_float_probability_entries(M) else -1
+    for i in range(n):
         for j in range(i):
-            M[i][j] = -1
-
-
-# Backward-compatible alias (vertical matrix uses the same rule)
-enforce_vertical_lower_triangle_inplace = enforce_axis_lower_triangle_inplace
+            M[i][j] = fill
 
 
 def apply_canonical_per_axis_orders(
@@ -242,7 +285,7 @@ def apply_canonical_per_axis_orders(
     anteroposterior matrices each get their own permutation; structure row labels for
     each tab should use the corresponding returned list ``(sv, sml, sap)``.
 
-    Seals the lower triangle (-1) on each per-rater matrix after reordering.
+    Seals the lower triangle on each per-rater matrix after reordering.
     """
     if not structures:
         return [], [], [], mv_list, ml_list, ap_list
@@ -291,9 +334,9 @@ def align_matrix_lists_to_reference(
     if not (len(mv_list) == len(ml_list) == len(ap_list) == len(structures_list)):
         return False, "Mismatched number of files (structures vs matrices).", [], [], []
     ref = structures_list[0]
-    out_v: List[List[List[int]]] = [mv_list[0]]
-    out_ml: List[List[List[int]]] = [ml_list[0]]
-    out_ap: List[List[List[int]]] = [ap_list[0]]
+    out_v: TriMatricesPerFile = [mv_list[0]]
+    out_ml: TriMatricesPerFile = [ml_list[0]]
+    out_ap: TriMatricesPerFile = [ap_list[0]]
 
     for idx in range(1, len(structures_list)):
         lst = structures_list[idx]
@@ -319,24 +362,6 @@ def align_matrix_lists_to_reference(
     return True, "", out_v, out_ml, out_ap
 
 
-def validate_structures_compatible(structures_list: List[List[Structure]]) -> Tuple[bool, str]:
-    """
-    Return (True, "") if every list can be aligned to the first (same order with CoM tolerance,
-    or a unique reordering by matching name + CoM).
-    """
-    if not structures_list:
-        return False, "No structure lists provided."
-    ref = structures_list[0]
-    for idx, lst in enumerate(structures_list[1:], start=2):
-        ok, msg = structures_match_same_order(ref, lst)
-        if ok:
-            continue
-        perm, err = find_alignment_permutation(ref, lst)
-        if perm is None:
-            return False, f"List #{idx} cannot be aligned to list #1: {err}"
-    return True, ""
-
-
 @dataclass
 class CellAggregate:
     """Per-directed-cell summary across K matrices (same (i,j) everywhere)."""
@@ -356,13 +381,19 @@ class CellAggregate:
 
 
 def aggregate_matrices_with_counts(
-    matrices: List[List[List[int]]],
+    matrices: List[List[List[Union[int, float]]]],
 ) -> Tuple[List[List[CellAggregate]], int]:
     """
     Build a grid of CellAggregate for each (i, j).
 
     - Entries with -2 in a matrix count as "not asked" for that rater.
-    - Answered entries contribute to counts for {-1, 0, +1} and to the mean.
+    - **Tri-valued** answered entries (``int`` in ``{-1, 0, +1}``) contribute to vote
+      counts and to the arithmetic mean **μ** of codes.
+    - **Probability summaries** (``float`` in ``[0, 1]``), e.g. from an already merged JSON,
+      contribute one pseudo-observation with code ``μ_k = 2 P_k - 1`` (so averaging **P**
+      across files with the same weight equals averaging these **μ** and mapping back with
+      ``(μ+1)/2``). **This is not** the same as merging all underlying raw raters unless each
+      file stands for one equal-weight cohort and you only care about this summary rule.
 
     **Per-cell independence:** There is no propagation across cells during merge. Each
     ``(i, j)`` is aggregated from that cell in each file only.
@@ -400,16 +431,49 @@ def aggregate_matrices_with_counts(
             total = 0.0
             n_ans = 0
             for M in matrices:
-                v = int(M[i][j])
-                if v == -2:
+                v = M[i][j]
+                if isinstance(v, bool):
                     n_notasked += 1
                     continue
-                if v not in (-1, 0, 1):
+                if v is None:
                     n_notasked += 1
                     continue
-                counts[v] = counts.get(v, 0) + 1
-                total += float(v)
-                n_ans += 1
+                # Probability summary: one pseudo-sample with code 2P - 1 (no tri-valued counts).
+                if isinstance(v, float) and 0.0 <= v <= 1.0:
+                    total += 2.0 * v - 1.0
+                    n_ans += 1
+                    continue
+                if isinstance(v, int):
+                    if v == -2:
+                        n_notasked += 1
+                        continue
+                    if v in (-1, 0, 1):
+                        counts[v] = counts.get(v, 0) + 1
+                        total += float(v)
+                        n_ans += 1
+                        continue
+                    n_notasked += 1
+                    continue
+                try:
+                    fv = float(v)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    n_notasked += 1
+                    continue
+                if 0.0 <= fv <= 1.0:
+                    total += 2.0 * fv - 1.0
+                    n_ans += 1
+                elif abs(fv - round(fv)) < 1e-9:
+                    iv = int(round(fv))
+                    if iv == -2:
+                        n_notasked += 1
+                    elif iv in (-1, 0, 1):
+                        counts[iv] = counts.get(iv, 0) + 1
+                        total += float(iv)
+                        n_ans += 1
+                    else:
+                        n_notasked += 1
+                else:
+                    n_notasked += 1
             mean = total / n_ans if n_ans > 0 else 0.0
             row_out.append(
                 CellAggregate(
@@ -423,65 +487,26 @@ def aggregate_matrices_with_counts(
     return out, K
 
 
-def aggregate_matrices_mean_only(matrices: List[List[List[int]]]) -> List[List[float]]:
-    """Backward-compatible: mean of non--2 entries only (same as legacy aggregate_matrices)."""
-    agg, _ = aggregate_matrices_with_counts(matrices)
-    # Legacy behavior: cells with no answers stay 0.0 (not NaN).
-    return [[c.mean if c.n_answered > 0 else 0.0 for c in row] for row in agg]
-
-
-def _majority_winner_triple(counts: Dict[int, int]) -> Optional[int]:
-    """
-    Return the unique value in {-1, 0, +1} with the most votes, or None if there is a tie.
-    """
-    best = max(counts.get(k, 0) for k in (-1, 0, 1))
-    winners = [k for k in (-1, 0, 1) if counts.get(k, 0) == best]
-    if len(winners) == 1:
-        return int(winners[0])
-    return None
-
-
-def _z_from_majority_winner(winner: Optional[int]) -> float:
-    """Map consensus label to [0, 1] heat axis; NaN = tie / ambiguous vote."""
-    if winner is None:
-        return float("nan")
-    if winner == 1:
-        return 1.0
-    if winner == -1:
-        return 0.0
-    return 0.5  # majority "not sure" (0)
-
-
 def cell_aggregate_to_display_matrix(
     agg: List[List[CellAggregate]],
-    color_mode: str = "majority",
     merge_k: Optional[int] = None,
 ) -> Tuple[List[List[float]], List[List[str]], List[List[bool]]]:
     """
-    Float matrix for imshow, annotation strings per cell, and tie_mask for visualization.
+    Float matrix for imshow and per-cell annotation strings (merged heatmap).
 
-    ``color_mode``:
+    Uses ``P = (mean + 1) / 2`` from :attr:`CellAggregate.probability_yes_green` over
+    answered contributions only (same rule as :func:`aggregate_to_p_yes_matrix`).
 
-    - ``"majority"`` (default): color encodes **plurality vote** on {-1,0,+1} per cell.
-      **Ties** (e.g. K=2 with +1 vs −1) use **NaN** in ``Z`` and ``tie_mask[i][j] == True``
-      so the UI can draw **purple** — not a misleading yellow "50% yes" from mapping
-      **mean** to (μ+1)/2.
-      Majority "unsure" (0) maps to 0.5 (orange band), distinct from a vote tie.
+    Off-diagonal cells with no answers use NaN (grey). Diagonal maps to ``0.0``.
+    ``tie_mask`` is always false (kept for call-site compatibility).
 
-    - ``"mean"``: legacy coloring ``P = (mean + 1) / 2`` over answered values (can be
-      0.5 when mean is 0, including pure disagreement +1 vs −1). ``tie_mask`` is all False.
-
-    Off-diagonal cells with no answers use NaN (grey). Diagonal: agreed −1 → 0.0 on scale.
-
-    ``merge_k``: total number of merged raters (sessions). When set, annotations show
-    ``answered/total`` so partial overlap (one rater −2, another answered) is visible.
+    ``merge_k``: when set, annotations show ``answered/total`` for partial overlap visibility.
     """
     n = len(agg)
     nan = float("nan")
     Z = [[nan for _ in range(n)] for _ in range(n)]
     ann = [["" for _ in range(n)] for _ in range(n)]
     tie_mask = [[False for _ in range(n)] for _ in range(n)]
-    use_mean = color_mode.strip().lower() == "mean"
 
     for i in range(n):
         for j in range(n):
@@ -506,26 +531,10 @@ def cell_aggregate_to_display_matrix(
                 parts.append(ch)
             if c.n_notasked > 0:
                 parts.append(f"na={c.n_notasked}")
-            if (
-                merge_k is not None
-                and merge_k > 1
-                and c.n_answered < merge_k
-                and use_mean
-            ):
+            if merge_k is not None and merge_k > 1 and c.n_answered < merge_k:
                 parts.append("μ uses answered only (−2 excluded)")
 
-            if use_mean:
-                Z[i][j] = c.probability_yes_green
-            else:
-                win = _majority_winner_triple(c.counts)
-                if win is None:
-                    parts.append("tie")
-                    Z[i][j] = nan
-                    tie_mask[i][j] = True
-                else:
-                    parts.append(f"maj {win:+d}")
-                    Z[i][j] = _z_from_majority_winner(win)
-
+            Z[i][j] = c.probability_yes_green
             ann[i][j] = "\n".join(parts)
     return Z, ann, tie_mask
 
@@ -554,33 +563,43 @@ def aggregate_to_p_yes_matrix(agg: List[List[CellAggregate]]) -> List[List[Optio
     return out
 
 
-def aggregate_to_consensus_matrix(agg: List[List[CellAggregate]]) -> List[List[int]]:
+def aggregate_to_n_answered_matrix(agg: List[List[CellAggregate]]) -> List[List[Optional[int]]]:
     """
-    **Discrete** tri-valued matrix for Hasse / PDAG and MatrixBuilder-compatible JSON.
+    Per-cell number of files/raters that contributed an answer at ``(i, j)`` (same rule as
+    :attr:`CellAggregate.n_answered`). Saved next to ``P`` so merged JSON is not fully lossy.
 
-    **Plurality vote** on ``{-1, 0, +1}`` among answered raters; **ties** use **rounded mean**
-    (clamped to ``{-1, 0, 1}``). This is **not** the same as :func:`aggregate_to_p_yes_matrix`;
-    use the ``matrix_*_p_yes`` fields in merged saves for probability consensus without vote
-    rounding.
-
-    Diagonal is ``-1``; cells with no answers are ``-2``.
+    - Diagonal: merge depth ``K`` (same as synthetic diagonal aggregate).
+    - Off-diagonal, none answered: ``None`` (JSON ``null``).
     """
     n = len(agg)
-    M: List[List[int]] = [[-2] * n for _ in range(n)]
+    out: List[List[Optional[int]]] = [[None] * n for _ in range(n)]
     for i in range(n):
         for j in range(n):
-            if i == j:
-                M[i][j] = -1
-                continue
             c = agg[i][j]
-            if c.n_answered == 0:
-                M[i][j] = -2
+            if i == j:
+                out[i][j] = c.n_answered
                 continue
-            max_votes = max(c.counts.get(k, 0) for k in (-1, 0, 1))
-            winners = [k for k in (-1, 0, 1) if c.counts.get(k, 0) == max_votes]
-            if len(winners) == 1:
-                M[i][j] = int(winners[0])
+            if c.n_answered == 0:
+                out[i][j] = None
             else:
-                r = int(round(c.mean))
-                M[i][j] = max(-1, min(1, r))
-    return M
+                out[i][j] = c.n_answered
+    return out
+
+
+def aggregate_to_n_notasked_matrix(agg: List[List[CellAggregate]]) -> List[List[Optional[int]]]:
+    """
+    Per-cell count of files/raters with ``-2`` / missing at ``(i, j)``.
+
+    - Diagonal: ``0``.
+    - Off-diagonal: always an int in ``[0, K]`` (use with ``n_answered`` to recover ``K``).
+    """
+    n = len(agg)
+    out: List[List[Optional[int]]] = [[None] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            c = agg[i][j]
+            if i == j:
+                out[i][j] = 0
+            else:
+                out[i][j] = c.n_notasked
+    return out

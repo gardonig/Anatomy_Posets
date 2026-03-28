@@ -1,7 +1,8 @@
 """
-Regression: merged consensus from test5 + test6 matches saved merged_consensus_5_6.json.
+Regression: merged probability matrices from test5 + test6 match saved merged_consensus_5_6.json
+(if present — same pipeline as the poset viewer merge, using aggregate_to_p_yes_matrix).
 
-Also documents per-cell checks (same pipeline as the poset viewer merge).
+Golden file must use the same schema (float / null cells). Legacy int-only merged files will fail.
 """
 
 from __future__ import annotations
@@ -13,10 +14,9 @@ import pytest
 
 from anatomy_poset.core.matrix_aggregation import (
     aggregate_matrices_with_counts,
-    aggregate_to_consensus_matrix,
+    aggregate_to_p_yes_matrix,
     align_matrix_lists_to_reference,
     apply_canonical_per_axis_orders,
-    enforce_axis_lower_triangle_inplace,
     reindex_matrix_to_structure_order,
 )
 from anatomy_poset.core.io import load_poset_from_json
@@ -40,15 +40,13 @@ def test_merge_test5_test6_matches_saved_merged_consensus() -> None:
 
     sv, sml, sap, mv_ord, ml_ord, ap_ord = apply_canonical_per_axis_orders(st5, mv_a, ml_a, ap_a)
 
-    def consensus_sealed(mats: list) -> list:
+    def merged_p_yes(mats: list) -> list:
         agg, _k = aggregate_matrices_with_counts(mats)
-        m = aggregate_to_consensus_matrix(agg)
-        enforce_axis_lower_triangle_inplace(m)
-        return m
+        return aggregate_to_p_yes_matrix(agg)
 
-    mv = consensus_sealed(mv_ord)
-    mml = consensus_sealed(ml_ord)
-    map_ = consensus_sealed(ap_ord)
+    mv = merged_p_yes(mv_ord)
+    mml = merged_p_yes(ml_ord)
+    map_ = merged_p_yes(ap_ord)
     mml_save = reindex_matrix_to_structure_order(sv, sml, mml)
     map_save = reindex_matrix_to_structure_order(sv, sap, map_)
 
@@ -61,7 +59,7 @@ def test_merge_test5_test6_matches_saved_merged_consensus() -> None:
 
 
 def test_manual_vertical_cell_counts_match_aggregate() -> None:
-    """Spot-check: per-cell mean and consensus for a few (i,j) pairs (K=2)."""
+    """Spot-check: per-cell mean and P(yes) for a few (i,j) pairs (K=2)."""
     if not _P5.is_file() or not _P6.is_file():
         pytest.skip("test5/test6 JSON not present")
 
@@ -74,15 +72,14 @@ def test_manual_vertical_cell_counts_match_aggregate() -> None:
     _, _, _, mv_ord, _, _ = apply_canonical_per_axis_orders(st5, mv_a, ml_a, ap_a)
     agg, k = aggregate_matrices_with_counts(mv_ord)
     assert k == 2
-    cons = aggregate_to_consensus_matrix(agg)
-    enforce_axis_lower_triangle_inplace(cons)
+    p = aggregate_to_p_yes_matrix(agg)
 
     # Lower triangle sealed: j < i => -1 for both raters
     assert mv_ord[0][3][1] == -1 and mv_ord[1][3][1] == -1
     assert agg[3][1].mean == -1.0
-    assert cons[3][1] == -1
+    assert p[3][1] == 0.0  # (μ+1)/2 with μ=-1
 
-    # [0][2]: -1 vs +1 => mean 0 => tie => round(mean) => 0 in Python 3
+    # [0][2]: -1 vs +1 => mean 0 => P(yes)=0.5
     assert mv_ord[0][0][2] == -1 and mv_ord[1][0][2] == 1
     assert abs(agg[0][2].mean) < 1e-9
-    assert cons[0][2] == 0
+    assert abs(p[0][2] - 0.5) < 1e-9

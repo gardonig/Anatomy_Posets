@@ -1,8 +1,41 @@
+from typing import Set, Tuple
+
 from src.anatomy_poset.core.axis_models import (
     AXIS_VERTICAL,
     Structure,
 )
 from src.anatomy_poset.core.matrix_builder import MatrixBuilder
+
+
+def _path_on_edges(start: int, end: int, edges: Set[Tuple[int, int]]) -> bool:
+    if start == end:
+        return True
+    adj: dict[int, list[int]] = {}
+    for u, v in edges:
+        adj.setdefault(u, []).append(v)
+    stack = [start]
+    seen: Set[int] = set()
+    while stack:
+        u = stack.pop()
+        if u in seen:
+            continue
+        seen.add(u)
+        for v in adj.get(u, []):
+            if v == end:
+                return True
+            if v not in seen:
+                stack.append(v)
+    return False
+
+
+def _transitive_edge_reduction(edges: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    reduced = set(edges)
+    for u, v in list(edges):
+        temp = set(reduced)
+        temp.discard((u, v))
+        if _path_on_edges(u, v, temp):
+            reduced.discard((u, v))
+    return reduced
 
 
 def create_mock_structures():
@@ -27,21 +60,19 @@ def test_matrix_builder_sorting():
 
 
 def test_path_exists_transitivity():
-    """Graph reachability on ``edges`` (kept in sync with +1 in M)."""
+    """Transitive +1 in M ⇒ path_exists_matrix sees the chain."""
     builder = MatrixBuilder(create_mock_structures(), axis=AXIS_VERTICAL)
     builder.record_response_matrix(0, 1, 1)
     builder.record_response_matrix(1, 2, 1)
 
-    assert builder.path_exists(0, 2) is True
-    assert builder.path_exists(2, 0) is False
+    assert builder.path_exists_matrix(0, 2) is True
+    assert builder.path_exists_matrix(2, 0) is False
 
 
 def test_edge_redundancy_reduction():
-    """Transitive reduction on the current edge set."""
-    builder = MatrixBuilder(create_mock_structures(), axis=AXIS_VERTICAL)
-    builder.edges.update([(0, 1), (1, 2), (0, 2)])
-
-    reduced_edges = builder.edge_redundancy_reduction()
+    """Transitive reduction on a synthetic edge set (Hasse cover logic in poset viewer)."""
+    edges = {(0, 1), (1, 2), (0, 2)}
+    reduced_edges = _transitive_edge_reduction(edges)
 
     assert (0, 1) in reduced_edges
     assert (1, 2) in reduced_edges
