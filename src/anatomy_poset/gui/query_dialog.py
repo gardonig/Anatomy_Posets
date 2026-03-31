@@ -1136,10 +1136,13 @@ class QueryDialog(QDialog):
         question_text: str,
         answer: Optional[bool],
         feedback: str,
+        answer_label: Optional[str] = None,
     ) -> None:
         """
         Append a feedback report entry to a .jsonl file next to the autosave JSON.
         A file is created the first time feedback is provided.
+
+        ``answer_label`` overrides the auto-derived answer string (e.g. ``"undone"``).
         """
         feedback = (feedback or "").strip()
         if not feedback:
@@ -1150,14 +1153,18 @@ class QueryDialog(QDialog):
                 stem = self._autosave_path.stem
                 self._feedback_log_path = base_dir / f"{stem}.feedback.jsonl"
 
-            entry = {
-                "axis": self._axis,
-                "question": question_text,
-                "answer": (
+            if answer_label is not None:
+                answer_str = answer_label
+            else:
+                answer_str = (
                     "yes" if answer is True else
                     "no" if answer is False else
                     "not_sure"
-                ),
+                )
+            entry = {
+                "axis": self._axis,
+                "question": question_text,
+                "answer": answer_str,
                 "feedback": feedback,
             }
             self._feedback_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1266,6 +1273,19 @@ class QueryDialog(QDialog):
     def go_back_one_question(self) -> None:
         if not self._answer_history or not self._matrix_snapshots:
             return
+        # Save any feedback the user typed for the current (unanswered) question before navigating away.
+        try:
+            pending_feedback = self.feedback_box.toPlainText() if self.feedback_box is not None else ""
+            if pending_feedback.strip():
+                self._append_feedback_report(
+                    question_text=self.query_label.text(),
+                    answer=None,
+                    feedback=pending_feedback,
+                    answer_label="undone",
+                )
+                self.feedback_box.clear()
+        except Exception:
+            pass
         last_i, last_j, _last_answer = self._answer_history.pop()
         prev_m = self._matrix_snapshots.pop()
         self.poset_builder.restore_matrix(prev_m)

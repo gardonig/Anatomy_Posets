@@ -18,7 +18,7 @@ data/Output_constructed_posets/*.json
 assets/visible_human_male/
 
 # Large generated tensors (keep directory, ignore contents)
-assets/visible_human_tensors/
+assets/visible_human_tensors/*
 !assets/visible_human_tensors/.gitkeep
 
 # Keep the directory structure but ignore the contents
