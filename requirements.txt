@@ -1,4 +1,3 @@
--e git+https://github.com/gardonig/Anatomy_Posets.git@d0ce313148594ee28e55f5f59bf5ff70fa4a3d7b#egg=anatomy_poset
 appnope==0.1.4
 asttokens==3.0.1
 attrs==25.4.0

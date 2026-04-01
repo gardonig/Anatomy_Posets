@@ -23,3 +23,7 @@ assets/visible_human_tensors/*
 
 # Keep the directory structure but ignore the contents
 !data/Output_constructed_posets/.gitkeep
+
+# Generated instruction documents
+scripts/generate_instructions_docx.py
+Anatomical_Poset_Builder_Instructions.docx
