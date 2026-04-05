@@ -10,9 +10,9 @@ class PosetFromJson:
     """Payload from :func:`load_poset_from_json` (structures + per-axis matrices)."""
 
     structures: List[Structure]
-    matrix_vertical: List[List[Union[int, float]]]
-    matrix_mediolateral: List[List[Union[int, float]]]
-    matrix_anteroposterior: List[List[Union[int, float]]]
+    matrix_vertical: List[List[Union[int, float, None]]]
+    matrix_mediolateral: List[List[Union[int, float, None]]]
+    matrix_anteroposterior: List[List[Union[int, float, None]]]
     n_answered_vertical: Optional[List[List[Optional[int]]]] = None
     n_answered_mediolateral: Optional[List[List[Optional[int]]]] = None
     n_answered_anteroposterior: Optional[List[List[Optional[int]]]] = None
@@ -66,8 +66,9 @@ def save_poset_to_json(
     """
     Save relation matrices to JSON. All axes stored in one file.
 
-    Matrix values may be tri-valued ``{-2,-1,0,+1}`` or probability cells in ``[0,1]`` with
-    ``null`` for unanswered cells.
+    Matrix values are tri-valued ``{-1, 0, +1}`` or probability cells in ``[0,1]``;
+    unanswered cells are ``null`` (JSON) / ``None`` (Python).
+    Legacy files with ``-2`` are normalised to ``null`` on load.
 
     Optional ``matrix_*_n_answered`` / ``matrix_*_n_notasked``: per-cell merge statistics
     (integers or JSON ``null``) aligned with the same indexing as ``matrix_*``. For merged
@@ -178,8 +179,9 @@ def load_poset_from_json(path: str) -> PosetFromJson:
     if M_ap is None:
         M_ap = _fallback_matrix_from_edges("edges_anteroposterior", "adjacency_anteroposterior")
 
-    def _normalize_matrix(M: list) -> List[List[Union[int, float]]]:
-        mat: List[List[Union[int, float]]] = [[-2 for _ in range(n)] for _ in range(n)]
+    def _normalize_matrix(M: list) -> List[List[Union[int, float, None]]]:
+        # None = not asked yet (unanswered); -1/0/+1 = answered; float [0,1] = probability.
+        mat: List[List[Union[int, float, None]]] = [[None for _ in range(n)] for _ in range(n)]
         has_probability = False
         if not isinstance(M, list):
             for i in range(n):
@@ -193,18 +195,21 @@ def load_poset_from_json(path: str) -> PosetFromJson:
                 try:
                     raw = row[j]
                     if raw is None:
-                        mat[i][j] = -2
+                        # Already None (unanswered) — leave as None.
                         continue
                     fv = float(raw)
-                    if -2 <= fv <= 1 and abs(fv - round(fv)) < 1e-9:
+                    # Legacy -2 and anything outside valid range → None (unanswered).
+                    if abs(fv - (-2)) < 1e-9:
+                        mat[i][j] = None
+                    elif -1 <= fv <= 1 and abs(fv - round(fv)) < 1e-9:
                         mat[i][j] = int(round(fv))
                     elif 0.0 <= fv <= 1.0:
                         mat[i][j] = fv
                         has_probability = True
                     else:
-                        mat[i][j] = -2
+                        mat[i][j] = None
                 except (TypeError, ValueError):
-                    mat[i][j] = -2
+                    mat[i][j] = None
         for i in range(n):
             mat[i][i] = 0.0 if has_probability else -1
         return mat

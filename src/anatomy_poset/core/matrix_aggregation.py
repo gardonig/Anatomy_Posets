@@ -31,7 +31,7 @@ from .axis_models import (
     Structure,
 )
 
-# n×n matrices per file: tri-valued ints in {-2,-1,0,1} and/or probability summaries in [0, 1]
+# n×n matrices per file: tri-valued ints in {-1,0,1}, None for unanswered, and/or probability summaries in [0, 1]
 TriMatricesPerFile = List[List[List[Union[int, float]]]]
 # Optional per-cell integer weights aligned with matrices (merged JSON ``n_answered`` grids).
 OptionalAnswerWeightsPerFile = List[Optional[List[List[Optional[int]]]]]
@@ -155,7 +155,7 @@ def permute_relation_matrix(
     as NumPy ``A[np.ix_(perm, perm)]`` when perm lists old row/col index for each new row/col).
     """
     n = len(M)
-    out: List[List[Union[int, float]]] = [[-2] * n for _ in range(n)]
+    out: List[List[Union[int, float, None]]] = [[None] * n for _ in range(n)]
     for i in range(n):
         for j in range(n):
             out[i][j] = M[perm[i]][perm[j]]
@@ -525,7 +525,7 @@ def aggregate_matrices_with_counts(
     """
     Build a grid of CellAggregate for each (i, j).
 
-    - Entries with -2 in a matrix count as "not asked" for that rater.
+    - Entries with ``None`` (or legacy ``-2``) count as "not asked" for that rater.
     - **Tri-valued** answered entries (``int`` in ``{-1, 0, +1}``) contribute to vote
       counts (weighted) and to **μ** as a weighted mean of codes.
     - **Probability summaries** (``float`` in ``[0, 1]``) contribute ``μ_k = 2 P_k - 1`` with
@@ -694,7 +694,7 @@ def cell_aggregate_to_display_matrix(
             if c.n_notasked > 0:
                 parts.append(f"na={c.n_notasked}")
             if merge_k is not None and merge_k > 1 and c.n_answered < merge_k:
-                parts.append("μ uses answered only (−2 excluded)")
+                parts.append("μ uses answered only (unanswered excluded)")
 
             Z[i][j] = c.probability_yes_green
             ann[i][j] = "\n".join(parts)

@@ -782,8 +782,8 @@ class PosetViewer(QWidget):
                     edges.add((i, j))
         return edges
 
-    def _matrix_summary_counts(self, M: List[List[Union[int, float]]]) -> Tuple[int, int, int, int]:
-        """Return counts of (+1, 0, -1, -2) entries (off-diagonal only)."""
+    def _matrix_summary_counts(self, M: List[List[Union[int, float, None]]]) -> Tuple[int, int, int, int]:
+        """Return counts of (+1, 0, -1, not-asked) entries (off-diagonal only)."""
         yes = no = unsure = not_asked = 0
         n = len(M)
         for i in range(n):
@@ -798,7 +798,7 @@ class PosetViewer(QWidget):
                     unsure += 1
                 elif v == -1:
                     no += 1
-                else:
+                else:  # None or any legacy -2
                     not_asked += 1
         return yes, unsure, no, not_asked
 
@@ -899,7 +899,7 @@ class PosetViewer(QWidget):
                 list_widget.addItem(f"  +1 (YES / above): {yes}")
                 list_widget.addItem(f"   0 (not sure):   {unsure}")
                 list_widget.addItem(f"  -1 (NO / not-above): {no}")
-                list_widget.addItem(f"  -2 (not asked yet): {not_asked}")
+                list_widget.addItem(f"  null (not asked yet): {not_asked}")
             list_widget.addItem("")
 
             # Hasse from strict edges: discrete (+1) or probability (p==1.0).
@@ -932,9 +932,9 @@ class PosetViewer(QWidget):
         hasse_view.draw_diagram(structures, edges, axis=axis)
 
     def _show_discrete_matrix(
-        self, M: List[List[int]], title: str, label_structures: List[Structure]
+        self, M: List[List[Union[int, float, None]]], title: str, label_structures: List[Structure]
     ) -> None:
-        """Tri-valued matrix: discrete levels {-2,-1,0,+1}."""
+        """Tri-valued matrix: discrete levels {null/not-asked, -1, 0, +1}."""
         if not M:
             QMessageBox.information(self, "No data", f"No matrix data available for {title}.")
             return
@@ -945,11 +945,14 @@ class PosetViewer(QWidget):
         dlg.setModal(False)
         layout = QVBoxLayout(dlg)
 
-        arr = np.full((n, n), -2, dtype=int)
+        # Use -2.0 as the display sentinel for None/not-asked (float array supports NaN
+        # but BoundaryNorm needs a concrete value; -2 is outside [-1,1] and visually distinct).
+        arr = np.full((n, n), -2.0, dtype=float)
         for i in range(n):
             row = M[i]
             for j in range(min(n, len(row))):
-                arr[i, j] = int(row[j])
+                v = row[j]
+                arr[i, j] = float(v) if v is not None else -2.0
 
         levels = [-2, -1, 0, 1]
         colors = [
@@ -988,7 +991,7 @@ class PosetViewer(QWidget):
         ax.set_yticklabels(labels, fontsize=6)
 
         cbar = fig.colorbar(im, ax=ax, ticks=levels)
-        cbar.ax.set_yticklabels(["-2 not asked", "-1 no", "0 unsure", "+1 yes"])
+        cbar.ax.set_yticklabels(["null (not asked)", "-1 no", "0 unsure", "+1 yes"])
 
         layout.addWidget(canvas, stretch=1)
         self._matrix_windows.append(dlg)

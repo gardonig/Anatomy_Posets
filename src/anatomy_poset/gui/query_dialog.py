@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
-from PySide6.QtCore import Qt, QRectF, QSize
-from PySide6.QtGui import QCloseEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap, QColor
+from PySide6.QtCore import Qt, QRectF, QSize, QEvent
+from PySide6.QtGui import QCloseEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap, QColor, QTransform
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -88,7 +88,7 @@ def _create_anatomy_views_panel(parent: QDialog) -> QWidget:
         # Allow in-panel zoom and panning for these anatomy views.
         image_label.enable_interactive_view(True)
         # Keep the background white but remove the surrounding border for a cleaner look.
-        image_label.setStyleSheet("background: #ffffff; padding: 0px; margin: 0px;")
+        image_label.setStyleSheet("background: #000000; padding: 0px; margin: 0px;")
 
         buttons: Dict[str, QPushButton] = {}
         group = QButtonGroup(panel)
@@ -118,31 +118,27 @@ def _create_anatomy_views_panel(parent: QDialog) -> QWidget:
             label.set_full_pixmap(pix)
             label.setPixmap(pix.scaledToHeight(img_height, Qt.SmoothTransformation))
 
-        # Center the view buttons horizontally
-        btn_row.addStretch(1)
+        _toggle_btn_ss = """
+            QPushButton {
+                padding: 4px 8px;
+                border-radius: 4px;
+                border: 1px solid #c0c0c5;
+                background: #f2f2f7;
+                color: #1a1a1a;
+                min-width: 0px;
+            }
+            QPushButton:hover { background: #e0e0ea; }
+            QPushButton:checked {
+                background: #007aff;
+                color: white;
+                border-color: #0051d5;
+            }
+        """
 
         for view_key in ("Front", "Side", "Rear"):
             btn = QPushButton(view_key)
             btn.setCheckable(True)
-            btn.setStyleSheet(
-                """
-                QPushButton {
-                    padding: 4px 12px;
-                    border-radius: 4px;
-                    border: 1px solid #c0c0c5;
-                    background: #f2f2f7;
-                    color: #1a1a1a;
-                }
-                QPushButton:hover {
-                    background: #e0e0ea;
-                }
-                QPushButton:checked {
-                    background: #007aff;
-                    color: white;
-                    border-color: #0051d5;
-                }
-                """
-            )
+            btn.setStyleSheet(_toggle_btn_ss)
 
             def on_clicked(
                 checked: bool,  # noqa: ARG001
@@ -150,15 +146,13 @@ def _create_anatomy_views_panel(parent: QDialog) -> QWidget:
                 vdict: Dict[str, str] = views,
                 label: ClickableImageLabel = image_label,
             ) -> None:
-                # QButtonGroup ensures only one button is checked at a time.
                 _load_view(label, vdict, k)
 
             btn.clicked.connect(on_clicked)
             group.addButton(btn)
             buttons[view_key] = btn
-            btn_row.addWidget(btn)
+            btn_row.addWidget(btn, stretch=1)
 
-        btn_row.addStretch(1)
         tab_layout.addLayout(btn_row)
         tab_layout.addWidget(image_label)
 
@@ -195,10 +189,10 @@ class SliceLocationWidget(QWidget):
         self._min_val = 0
         self._max_val = 0
         self._value = 0
-        # Make the outline large (but still shrinkable with the window).
-        self.setMaximumWidth(280)
+        # Let the outline fill the available width of the right panel (capped at 280px).
+        self.setMaximumWidth(200)
         self.setSizePolicy(
-            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred,
         )
         self.setToolTip("Slice position in body")
@@ -234,8 +228,8 @@ class SliceLocationWidget(QWidget):
         # For the axial plane, a tall widget just creates empty padding above/below,
         # so keep it closer to square to free vertical space for the slider.
         if self._plane == "axial":
-            return QSize(220, 260)
-        return QSize(220, 480)
+            return QSize(160, 220)
+        return QSize(160, 380)
 
     def paintEvent(self, event) -> None:  # noqa: ARG002
         painter = QPainter(self)
@@ -314,38 +308,39 @@ class FullBodyVolumePanel(QWidget):
         self._index: int = 0
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(2)
 
-        # Plane selector: centered in the top row, similar to the Anatomy Images window.
+        # Plane selector: fills the top row, buttons expand to fill (same logic as answer buttons).
         plane_row = QHBoxLayout()
-        plane_row.addStretch(1)
+        plane_row.setSpacing(6)
         plane_row.addWidget(QLabel("Plane:"))
         # Map human-readable label -> button (keys keep original casing so comparisons match).
         self._plane_buttons: Dict[str, QPushButton] = {}
         self._plane_button_group = QButtonGroup(self)
         self._plane_button_group.setExclusive(True)
 
+        _plane_btn_ss = """
+            QPushButton {
+                padding: 4px 8px;
+                min-width: 0px;
+                border-radius: 4px;
+                border: 1px solid #c0c0c5;
+                background: #f2f2f7;
+                color: #1a1a1a;
+            }
+            QPushButton:hover { background: #e0e0ea; }
+            QPushButton:checked {
+                background: #007aff;
+                color: white;
+                border-color: #0051d5;
+            }
+        """
+
         for label in ("Axial", "Coronal", "Sagittal"):
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setStyleSheet(
-                """
-                QPushButton {
-                    padding: 4px 12px;
-                    border-radius: 4px;
-                    border: 1px solid #c0c0c5;
-                    background: #f2f2f7;
-                    color: #1a1a1a;
-                }
-                QPushButton:hover {
-                    background: #e0e0ea;
-                }
-                QPushButton:checked {
-                    background: #007aff;
-                    color: white;
-                    border-color: #0051d5;
-                }
-                """
-            )
+            btn.setStyleSheet(_plane_btn_ss)
 
             def on_clicked(
                 checked: bool,  # noqa: ARG001
@@ -358,9 +353,8 @@ class FullBodyVolumePanel(QWidget):
             btn.clicked.connect(on_clicked)
             self._plane_button_group.addButton(btn)
             self._plane_buttons[label] = btn
-            plane_row.addWidget(btn)
+            plane_row.addWidget(btn, stretch=1)
 
-        plane_row.addStretch(1)
         layout.addLayout(plane_row)
 
         # Second row: volume chooser aligned to the left.
@@ -384,7 +378,7 @@ class FullBodyVolumePanel(QWidget):
         layout.addLayout(content_row)
 
         left_col = QVBoxLayout()
-        content_row.addLayout(left_col, 3)
+        content_row.addLayout(left_col, 4)
 
         self._image_label = ClickableImageLabel("Full-body slice — full view", parent=parent)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -396,12 +390,12 @@ class FullBodyVolumePanel(QWidget):
         )
         left_col.addWidget(self._image_label)
 
-        # Right side: compact slice outline ABOVE the slider controls
+        # Right side: slice outline ABOVE the slider controls, both centered in the sidebar.
         right_widget = QWidget(self)
         right_col = QVBoxLayout(right_widget)
         right_col.setContentsMargins(0, 0, 0, 0)
-        # Keep outline and slider snug so the slider can be as long as possible.
         right_col.setSpacing(2)
+        right_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         content_row.addWidget(right_widget, 1)
 
         self._slice_location = SliceLocationWidget(parent=self)
@@ -410,7 +404,7 @@ class FullBodyVolumePanel(QWidget):
         slider_widget = QWidget(self)
         slider_col = QVBoxLayout(slider_widget)
         slider_col.setContentsMargins(0, 0, 0, 0)
-        right_col.addWidget(slider_widget, 1)
+        right_col.addWidget(slider_widget, 1, Qt.AlignmentFlag.AlignHCenter)
 
         self._prev_btn = QPushButton("▲")
         self._prev_btn.setFixedWidth(32)
@@ -437,9 +431,10 @@ class FullBodyVolumePanel(QWidget):
         self._next_btn.setEnabled(False)
         slider_col.addWidget(self._next_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        self._index_label = QLabel("Slice: – / –")
-        self._index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        slider_col.addWidget(self._index_label)
+        # Axial-mode index label lives in the slider column (next to the vertical slider).
+        self._slider_index_label = QLabel("Slice: – / –")
+        self._slider_index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        slider_col.addWidget(self._slider_index_label)
 
         # Horizontal slider + fine-step arrows directly below the image on the left.
         # Used for coronal and sagittal planes so that left/right movement of the slider
@@ -470,6 +465,12 @@ class FullBodyVolumePanel(QWidget):
         self._bottom_next_btn.clicked.connect(self._step_next)
         self._bottom_next_btn.setVisible(False)
         bottom_row.addWidget(self._bottom_next_btn)
+
+        # Coronal/sagittal index label sits to the right of the horizontal slider.
+        self._index_label = QLabel("Slice: – / –")
+        self._index_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._index_label.setVisible(False)  # shown only in coronal/sagittal
+        bottom_row.addWidget(self._index_label)
 
         # Try to auto-load a default tensor: prefer assets/visible_human_tensors, then repo root.
         self._try_auto_load_tensor()
@@ -572,10 +573,12 @@ class FullBodyVolumePanel(QWidget):
         self._slider.setVisible(use_vertical)
         self._prev_btn.setVisible(use_vertical)
         self._next_btn.setVisible(use_vertical)
+        self._slider_index_label.setVisible(use_vertical)
 
         self._bottom_slider.setVisible(not use_vertical)
         self._bottom_prev_btn.setVisible(not use_vertical)
         self._bottom_next_btn.setVisible(not use_vertical)
+        self._index_label.setVisible(not use_vertical)
 
         self._bottom_prev_btn.setEnabled(not use_vertical and self._volume is not None)
         self._bottom_next_btn.setEnabled(not use_vertical and self._volume is not None)
@@ -680,21 +683,15 @@ class FullBodyVolumePanel(QWidget):
         if sl is None:
             self._image_label.setText("[No volume loaded]")
             self._image_label.setPixmap(QPixmap())
+            self._raw_pix = None
             self._index_label.setText("Slice: – / –")
+            self._slider_index_label.setText("Slice: – / –")
             return
 
         # Normalize to [0, 255] uint8 for display
         sl = np.nan_to_num(sl, nan=0.0, posinf=0.0, neginf=0.0)
-        if sl.ndim == 2:
-            vmin = float(sl.min())
-            vmax = float(sl.max())
-        else:
-            vmin = float(sl.min())
-            vmax = float(sl.max())
-        if vmax > vmin:
-            sl_norm = (sl - vmin) / (vmax - vmin)
-        else:
-            sl_norm = np.zeros_like(sl, dtype=np.float32)
+        vmin, vmax = float(sl.min()), float(sl.max())
+        sl_norm = (sl - vmin) / (vmax - vmin) if vmax > vmin else np.zeros_like(sl, dtype=np.float32)
         img8 = (sl_norm * 255.0).clip(0, 255).astype(np.uint8)
         if img8.ndim == 2:
             h, w = img8.shape
@@ -704,35 +701,50 @@ class FullBodyVolumePanel(QWidget):
             rgb = img8
         rgb = np.ascontiguousarray(rgb)
 
-        qimg = QImage(
-            rgb.data,
-            w,
-            h,
-            3 * w,
-            QImage.Format.Format_RGB888,
-        )
-        pix = QPixmap.fromImage(qimg)
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        self._raw_pix = QPixmap.fromImage(qimg)
 
-        # Preserve the current zoom/offset when changing slices so that the
-        # next slice is shown with the same view as the previous one.
-        prev_zoom = getattr(self._image_label, "_zoom", 1.0)
-        prev_off_x = getattr(self._image_label, "_offset_x", 0.0)
-        prev_off_y = getattr(self._image_label, "_offset_y", 0.0)
-
-        self._image_label.set_full_pixmap(pix)
-        # Use the raw pixmap; ClickableImageLabel will handle fitting and zoom.
-        self._image_label.setPixmap(pix)
-
-        # Restore the previous interactive view state.
-        self._image_label._zoom = prev_zoom
-        self._image_label._offset_x = prev_off_x
-        self._image_label._offset_y = prev_off_y
-        self._image_label.update()
+        self._apply_pix_to_label()
 
         max_idx = self._slider.maximum()
-        self._index_label.setText(
-            f"{self._plane.capitalize()} slice: {self._index + 1} / {max_idx + 1}"
+        slice_text = f"{self._plane.capitalize()} slice:\n{self._index + 1} / {max_idx + 1}"
+        self._index_label.setText(slice_text)
+        self._slider_index_label.setText(slice_text)
+
+    def _apply_pix_to_label(self) -> None:
+        """Push self._raw_pix to the image label, rotating 90° when axial and the label is portrait."""
+        pix = getattr(self, "_raw_pix", None)
+        if pix is None or pix.isNull():
+            return
+
+        should_rotate = (
+            self._plane == "axial"
+            and self._image_label.height() > self._image_label.width()
         )
+        rotated = bool(getattr(self, "_pix_rotated", False))
+
+        display_pix = (
+            pix.transformed(QTransform().rotate(90), Qt.TransformationMode.SmoothTransformation)
+            if should_rotate else pix
+        )
+
+        # Reset zoom/offset only when rotation state changes so flipping doesn't leave
+        # the view panned to a nonsensical position.
+        if should_rotate != rotated:
+            self._image_label._zoom = 1.0
+            self._image_label._offset_x = 0.0
+            self._image_label._offset_y = 0.0
+        self._pix_rotated = should_rotate
+
+        self._image_label.set_full_pixmap(display_pix)
+        self._image_label.setPixmap(display_pix)
+        self._image_label.update()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        # Re-evaluate rotation whenever the panel (and thus the label) is resized.
+        if self._plane == "axial" and getattr(self, "_raw_pix", None) is not None:
+            self._apply_pix_to_label()
 
 class QueryDialog(QDialog):
     """
@@ -791,48 +803,126 @@ class QueryDialog(QDialog):
                 if vals:
                     self._bilateral_core_com_vertical[core] = sum(vals) / len(vals)
 
-        main_layout = QHBoxLayout(self)
+        _root_layout = QVBoxLayout(self)
+        _root_layout.setContentsMargins(0, 0, 0, 0)
+        _root_layout.setSpacing(0)
 
         # Use a horizontal splitter so the three main sections (anatomy images,
         # questions/overview, full-body volume) can be resized by the user.
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        # Make the splitter handles thicker and visually distinct so they are easy to grab.
+        self._splitter = splitter
         splitter.setHandleWidth(10)
         splitter.setStyleSheet(
             """
             QSplitter::handle {
-                background-color: rgba(0, 0, 0, 18);  /* very subtle, almost transparent */
+                background-color: #e8e8ed;
+                border-left: 2px solid #000000;
+                border-right: 2px solid #000000;
+                border-radius: 3px;
             }
             QSplitter::handle:hover {
-                background-color: rgba(0, 0, 0, 40);  /* slightly stronger on hover */
+                background-color: #007aff;
+                border-left: 2px solid #000000;
+                border-right: 2px solid #000000;
+                border-radius: 3px;
             }
             """
         )
-        main_layout.addWidget(splitter)
+        _root_layout.addWidget(splitter, 1)
+
+        # Each column is wrapped in a pane with an Apple-style header bar that
+        # contains the title and a chevron button to collapse/expand that column.
+        _col_last_sizes: List[int] = [0, 0, 0]
+
+        _HEADER_BTN_SS = """
+            QPushButton {
+                background: transparent; border: none; border-radius: 4px;
+                color: #666; font-size: 15px; padding: 0px;
+            }
+            QPushButton:hover { background: rgba(0,0,0,10); color: #1a1a1a; }
+        """
+
+        def _wrap_column(title: str, content: QWidget, col_idx: int, min_expanded: int = 0) -> QWidget:
+            pane = QWidget()
+            pane.setStyleSheet("QWidget#colPane { background: #1c1c1e; }")
+            pane.setObjectName("colPane")
+            pane.setMinimumWidth(min_expanded if min_expanded > 0 else 28)
+            pv = QVBoxLayout(pane)
+            pv.setContentsMargins(0, 0, 0, 0)
+            pv.setSpacing(0)
+
+            header = QWidget()
+            header.setFixedHeight(26)
+            header.setStyleSheet(
+                "background: #e8e8ed; border-bottom: 1px solid #c8c8d0;"
+            )
+            hl = QHBoxLayout(header)
+            hl.setContentsMargins(10, 0, 4, 0)
+            hl.setSpacing(0)
+
+            title_lbl = QLabel(title.upper())
+            title_lbl.setStyleSheet(
+                "color: #555; font-size: 10px; font-weight: 700; letter-spacing: 0.6px;"
+                " background: transparent; border: none;"
+            )
+
+            chevron = QPushButton("‹")
+            chevron.setCheckable(True)
+            chevron.setChecked(True)
+            chevron.setFixedSize(24, 24)
+            chevron.setStyleSheet(_HEADER_BTN_SS)
+            chevron.setToolTip(f"Hide {title}")
+
+            hl.addWidget(title_lbl, 1)
+            hl.addWidget(chevron)
+            pv.addWidget(header)
+            pv.addWidget(content, 1)
+
+            def _toggle(checked: bool) -> None:
+                sizes = list(splitter.sizes())
+                if not checked:
+                    _col_last_sizes[col_idx] = sizes[col_idx]
+                    content.hide()
+                    title_lbl.hide()
+                    pane.setMinimumWidth(28)
+                    sizes[col_idx] = 28
+                    chevron.setText("›")
+                    chevron.setToolTip(f"Show {title}")
+                else:
+                    content.show()
+                    title_lbl.show()
+                    pane.setMinimumWidth(min_expanded if min_expanded > 0 else 28)
+                    restore = _col_last_sizes[col_idx]
+                    if restore <= 28:
+                        restore = max(160, sum(sizes) // 3)
+                    sizes[col_idx] = restore
+                    chevron.setText("‹")
+                    chevron.setToolTip(f"Hide {title}")
+                splitter.setSizes(sizes)
+
+            chevron.toggled.connect(_toggle)
+            return pane
 
         # Middle column: questions and labels overview (inserted between anatomy and coronal panels)
         middle_widget = QWidget(self)
+        middle_widget.setStyleSheet("background: #1c1c1e;")
         left_col = QVBoxLayout(middle_widget)
+        left_col.setContentsMargins(8, 8, 8, 8)
+        left_col.setSpacing(6)
 
-        # --- Questions panel (placed above overview) ---
-        questions_group = QGroupBox("Questions")
-        questions_group.setStyleSheet("QGroupBox { font-weight: 600; font-size: 13px; }")
-        questions_layout = QVBoxLayout(questions_group)
+        questions_layout = left_col  # content goes directly into the column
+
+        left_col.addStretch(1)  # push content to vertical center
 
         # Question card (no border inside the questions panel)
         self.question_card = QFrame()
-        self.question_card.setMinimumHeight(120)
+        self.question_card.setFrameShape(QFrame.Shape.NoFrame)
         self.question_card.setStyleSheet(
-            """
-            QFrame {
-                background-color: #ffffff;
-                border-radius: 12px;
-                padding: 24px;
-                margin: 8px 0 12px 0;
-            }
-            """
+            "QFrame { background-color: #f8f8fc; border-radius: 10px; border: none; }"
         )
         card_layout = QVBoxLayout(self.question_card)
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setSpacing(4)
         self.query_label = QLabel("")
         self.query_label.setWordWrap(True)
         self.query_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -865,18 +955,19 @@ class QueryDialog(QDialog):
 
         # Back, Yes, No
         btn_row = QHBoxLayout()
-        self.back_btn = QPushButton("← Undo")
+        btn_row.setSpacing(6)
+        self.back_btn = QPushButton("← Undo  [A]")
         self.back_btn.setEnabled(False)
-        self.back_btn.setStyleSheet("padding: 10px 16px; font-size: 14px;")
+        self.back_btn.setStyleSheet("padding: 4px 8px; min-width: 0px; font-size: 14px; border-radius: 6px;")
         self.back_btn.clicked.connect(self.go_back_one_question)
         btn_row.addWidget(self.back_btn)
 
-        self.yes_btn = QPushButton("Yes")
+        self.yes_btn = QPushButton("Yes  [F]")
         self.yes_btn.setStyleSheet(
             """
             QPushButton {
                 background-color: #2e7d32; color: white; border: none; border-radius: 8px;
-                padding: 14px 28px; font-size: 18px; font-weight: 600;
+                padding: 4px 8px; min-width: 0px; font-size: 18px; font-weight: 600;
             }
             QPushButton:hover:enabled { background-color: #388e3c; }
             QPushButton:pressed:enabled { background-color: #1b5e20; }
@@ -885,12 +976,12 @@ class QueryDialog(QDialog):
         )
         self.yes_btn.clicked.connect(lambda: self.answer_query(True))
 
-        self.no_btn = QPushButton("No")
+        self.no_btn = QPushButton("No  [S]")
         self.no_btn.setStyleSheet(
             """
             QPushButton {
                 background-color: #c62828; color: white; border: none; border-radius: 8px;
-                padding: 14px 28px; font-size: 18px; font-weight: 600;
+                padding: 4px 8px; min-width: 0px; font-size: 18px; font-weight: 600;
             }
             QPushButton:hover:enabled { background-color: #d32f2f; }
             QPushButton:pressed:enabled { background-color: #b71c1c; }
@@ -899,12 +990,12 @@ class QueryDialog(QDialog):
         )
         self.no_btn.clicked.connect(lambda: self.answer_query(False))
         
-        self.not_sure_btn = QPushButton("Not sure")
+        self.not_sure_btn = QPushButton("Not sure  [D]")
         self.not_sure_btn.setStyleSheet(
             """
             QPushButton {
                 background-color: #f2f2f7; color: #1a1a1a; border: 1px solid #d1d1d6; border-radius: 8px;
-                padding: 14px 18px; font-size: 16px; font-weight: 600;
+                padding: 4px 8px; min-width: 0px; font-size: 16px; font-weight: 600;
             }
             QPushButton:hover:enabled { background-color: #e5e5ea; }
             QPushButton:pressed:enabled { background-color: #d1d1d6; }
@@ -912,11 +1003,9 @@ class QueryDialog(QDialog):
             """
         )
         self.not_sure_btn.clicked.connect(lambda: self.answer_query(None))
-        btn_row.addStretch()
-        btn_row.addWidget(self.no_btn)
-        btn_row.addWidget(self.not_sure_btn)
-        btn_row.addWidget(self.yes_btn)
-        btn_row.addStretch()
+        btn_row.addWidget(self.no_btn, stretch=1)
+        btn_row.addWidget(self.not_sure_btn, stretch=1)
+        btn_row.addWidget(self.yes_btn, stretch=1)
         questions_layout.addLayout(btn_row)
 
         # Progress bar
@@ -931,7 +1020,7 @@ class QueryDialog(QDialog):
             QProgressBar {
                 border: none;
                 border-radius: 4px;
-                background: #e0e0e0;
+                background: transparent;
             }
             QProgressBar::chunk {
                 border-radius: 4px;
@@ -957,15 +1046,14 @@ class QueryDialog(QDialog):
         self.finish_btn.hide()
         questions_layout.addWidget(self.finish_btn)
 
-        # Do not let the questions panel stretch to fill all remaining vertical space.
-        questions_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        # Thin divider between questions and overview
+        _divider = QFrame()
+        _divider.setFrameShape(QFrame.Shape.HLine)
+        _divider.setFixedHeight(1)
+        _divider.setStyleSheet("background: #d0d0d8; border: none;")
+        left_col.addWidget(_divider)
 
-        left_col.addWidget(questions_group)
-
-        # --- Segmentation labels overview panel (below questions) ---
-        overview_group = QGroupBox("Segmentation Labels Overview")
-        overview_group.setStyleSheet("QGroupBox { font-weight: 600; font-size: 13px; }")
-        overview_layout = QVBoxLayout(overview_group)
+        overview_layout = left_col  # overview content also goes directly into the column
 
         # Segmentation classes overview image
         overview_label = ClickableImageLabel("Segmentation classes overview — full view", self)
@@ -973,7 +1061,7 @@ class QueryDialog(QDialog):
         overview_label.enable_interactive_view(True)
         overview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         overview_label.setStyleSheet(
-            "background: #ffffff; padding: 0px; margin: 8px 0 4px 0;"
+            "background: #000000; padding: 0px; margin: 8px 0 4px 0;"
         )
         overview_path = ASSETS_DIR / "definition_images" / "overview_classes_v2.png"
         if overview_path.exists():
@@ -986,6 +1074,7 @@ class QueryDialog(QDialog):
         if overview_label.pixmap() is None or overview_label.pixmap().isNull():
             overview_label.setText("[Segmentation classes overview image missing]")
         overview_layout.addWidget(overview_label)
+        left_col.addStretch(1)  # push content to vertical center
 
         overview_link = QLabel(
             '<a href="https://github.com/wasserth/TotalSegmentator/blob/master/resources/imgs/overview_classes_v2.png">'
@@ -997,31 +1086,23 @@ class QueryDialog(QDialog):
         overview_link.setStyleSheet("color: #0a66c2; font-size: 11px; margin-bottom: 4px;")
         overview_layout.addWidget(overview_link)
 
-        # Likewise, keep the overview panel compact vertically.
-        overview_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-
-        left_col.addWidget(overview_group)
-
         # Add the middle column widget to the splitter
-        splitter.addWidget(middle_widget)
+        splitter.addWidget(_wrap_column("Questions", middle_widget, 1, min_expanded=460))
 
-        # Right column: Anatomy Images + labels overview below
-        anatomy_group = QGroupBox("Anatomy Images")
-        anatomy_group.setStyleSheet(
-            "QGroupBox { font-weight: 600; font-size: 13px; }"
-        )
+        # Left column: Anatomy Images
+        anatomy_group = QGroupBox()
+        anatomy_group.setStyleSheet("QGroupBox { border: none; margin: 0; padding: 0; background: #1c1c1e; }")
         anatomy_layout = QVBoxLayout(anatomy_group)
+        anatomy_layout.setContentsMargins(0, 0, 0, 0)
         anatomy_layout.addWidget(_create_anatomy_views_panel(self))
 
-        # Give the anatomy panel a tall left column with the front/side/rear views.
-        splitter.insertWidget(0, anatomy_group)
+        splitter.insertWidget(0, _wrap_column("Anatomy Images", anatomy_group, 0, min_expanded=280))
 
-        # Imaging support: full-body volume viewer (coronal slice stacks are kept in code but hidden by default)
-        coronal_group = QGroupBox("Full-Body Volume")
-        coronal_group.setStyleSheet(
-            "QGroupBox { font-weight: 600; font-size: 13px; }"
-        )
+        # Right column: Full-Body Volume
+        coronal_group = QGroupBox()
+        coronal_group.setStyleSheet("QGroupBox { border: none; margin: 0; padding: 0; background: #1c1c1e; }")
         coronal_layout = QVBoxLayout(coronal_group)
+        coronal_layout.setContentsMargins(8, 8, 8, 8)
 
         # NOTE: CoronalSlicesPanel remains available in code but is not added to the UI by default.
         # If needed in the future, it can be re-added here alongside the volume panel.
@@ -1043,12 +1124,15 @@ class QueryDialog(QDialog):
         vh_source.setStyleSheet("color: #0a66c2; font-size: 11px; margin-top: 4px;")
         coronal_layout.addWidget(vh_source)
 
-        splitter.addWidget(coronal_group)
+        splitter.addWidget(_wrap_column("Full-Body Volume", coronal_group, 2, min_expanded=280))
 
         # Set initial relative sizes for the three panes (can be adjusted by user)
         splitter.setStretchFactor(0, 2)  # anatomy images
         splitter.setStretchFactor(1, 3)  # questions/overview
         splitter.setStretchFactor(2, 3)  # full-body volume
+
+        for _i in range(3):
+            splitter.setCollapsible(_i, True)
 
         self._advance_to_next_query()
 
@@ -1102,13 +1186,42 @@ class QueryDialog(QDialog):
         super().resizeEvent(event)
         self._clamp_to_current_screen()
 
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        # Keyboard shortcuts are only active when the feedback text box does NOT have focus,
+        # so typing a comment is never accidentally intercepted.
+        if self.feedback_box.hasFocus():
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        if key == Qt.Key.Key_A:
+            if self.back_btn.isEnabled():
+                self.go_back_one_question()
+        elif key == Qt.Key.Key_S:
+            if self.no_btn.isEnabled():
+                self.answer_query(False)
+        elif key == Qt.Key.Key_D:
+            if self.not_sure_btn.isEnabled():
+                self.answer_query(None)
+        elif key == Qt.Key.Key_F:
+            if self.yes_btn.isEnabled():
+                self.answer_query(True)
+        else:
+            super().keyPressEvent(event)
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._clamp_to_current_screen()
+        # Ensure the dialog itself holds focus so key events arrive at keyPressEvent,
+        # not absorbed by a child widget (e.g. a button keeping focus after a click).
+        self.setFocus()
+
     def _autosave_poset(self, seal_lower_triangle: bool = False) -> None:
         """
         Persist the poset JSON (autosave after each answer / undo by default).
 
         When ``seal_lower_triangle`` is True (session complete or window closing), run
         :meth:`MatrixBuilder.seal_lower_triangle_com_prior` so the file does not keep
-        spurious ``-2`` below the diagonal from partial NO answers. Intermediate saves
+        spurious ``None`` below the diagonal from partial NO answers. Intermediate saves
         skip sealing so progress is cheap to write.
         """
         if not self._autosave_path or not self._save_callback:
@@ -1269,6 +1382,8 @@ class QueryDialog(QDialog):
         else:
             self.poset_builder.record_unknown(i, j)
         self._advance_to_next_query()
+        # Return focus to the dialog so the next keypress is caught immediately.
+        self.setFocus()
 
     def go_back_one_question(self) -> None:
         if not self._answer_history or not self._matrix_snapshots:
@@ -1333,6 +1448,7 @@ class QueryDialog(QDialog):
             self.back_btn.setEnabled(False)
         self._update_progress()
         self._autosave_poset(seal_lower_triangle=False)
+        self.setFocus()
 
     def _update_progress(self) -> None:
         asked = len(self._answer_history)
@@ -1341,7 +1457,7 @@ class QueryDialog(QDialog):
         if total == 0:
             value = 0
         else:
-            value = int(100 * asked / total)
+            value = int(100 * (asked / total) ** 0.5)
         self.progress_bar.setValue(value)
 
     def _pluralize_core(self, core: str) -> str:

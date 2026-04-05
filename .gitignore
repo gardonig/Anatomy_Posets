@@ -7,6 +7,18 @@ __pycache__/
 venv/
 env/
 .venv/
+.medsam_venv/
+.vibeseg_venv/
+.totalseg_venv
+
+# Cloned external tool repositories (re-clone from setup scripts)
+tools/
+
+# Segmentation outputs from external tools
+data/imaging_datasets
+data/posets/tests/*
+data/posets/merged_sessions/*
+data/totalseg_output
 
 # OS specific files
 .DS_Store

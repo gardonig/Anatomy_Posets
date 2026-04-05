@@ -1594,7 +1594,7 @@ class MainWindow(QMainWindow):
         # Remember optional input path for use during UI setup
         self._input_path: Optional[str] = input_path
         # Where to auto-save; set after we know the actual load path in _init_ui
-        output_dir = Path(__file__).resolve().parent / "Output_constructed_posets"
+        output_dir = Path(__file__).resolve().parent.parent / "data" / "posets"
         self._autosave_path: Optional[Path] = output_dir / "poset_autosave.json"
 
         self.poset_builder: PosetBuilder | None = None
@@ -1683,7 +1683,7 @@ class MainWindow(QMainWindow):
         # Load structures from file: CLI arg, or default test_structures.json
         load_path = self._input_path
         if load_path is None:
-            default_file = Path(__file__).resolve().parent / "Input_CoM_structures" / "test_structures.json"
+            default_file = Path(__file__).resolve().parent.parent / "data" / "structures" / "test_structures.json"
             if default_file.exists():
                 load_path = str(default_file)
         if load_path is not None:
@@ -1708,8 +1708,8 @@ class MainWindow(QMainWindow):
                 )
 
     def _builtposet_output_path(self, input_path: Path) -> Path:
-        """Autosave goes to Output_constructed_posets folder, not the input folder."""
-        output_dir = Path(__file__).resolve().parent / "Output_constructed_posets"
+        """Autosave goes to data/posets/ folder, not the input folder."""
+        output_dir = Path(__file__).resolve().parent.parent / "data" / "posets"
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir / f"{input_path.stem}.poset_autosave.json"
 

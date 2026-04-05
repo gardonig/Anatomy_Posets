@@ -41,9 +41,9 @@ class InstructionsDialog(QDialog):
             self.resize(w, h)
             self.setMaximumSize(geom.width(), geom.height())
 
-        # Image height preference: keep it large by default (still shrinkable with window)
+        # Image height: fill most of the dialog height leaving room for heading and button bar
         _win_h = self.height()
-        _anatomy_img_height = max(960, 3 * (_win_h - 140))
+        _anatomy_img_height = max(400, _win_h - 180)
 
         # All text: dark on white (no grey backgrounds)
         _text_style = "color: #1a1a1a; font-size: 14px; padding: 6px 0;"
@@ -70,14 +70,10 @@ class InstructionsDialog(QDialog):
         intro_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         anatomy_img = ClickableImageLabel("Anatomical axes — full view")
-        anatomy_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Enable in-dialog zoom (mouse wheel) and panning (left-drag) for this image.
+        anatomy_img.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         anatomy_img.enable_interactive_view(True)
-        # Tighten the in-label fit so we don't get visible "extra border" space.
         anatomy_img.set_fit_scale(1.0)
-        anatomy_img.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # Use a wider preferred width so the label doesn't get squashed horizontally.
-        anatomy_img.set_preferred_size(int(self.width() * 0.75), _anatomy_img_height)
+        anatomy_img.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         # Use updated example figure for anatomical axes.
         anatomy_path = ASSETS_DIR / "definition_images" / "Axes_example.png"
@@ -86,17 +82,18 @@ class InstructionsDialog(QDialog):
             anatomy_pix = QPixmap(str(anatomy_path))
             if not anatomy_pix.isNull():
                 anatomy_img.set_full_pixmap(anatomy_pix)
-                anatomy_img.setPixmap(
-                    anatomy_pix.scaledToHeight(_anatomy_img_height, Qt.SmoothTransformation)
-                )
+                scaled = anatomy_pix.scaledToHeight(_anatomy_img_height, Qt.SmoothTransformation)
+                anatomy_img.setPixmap(scaled)
+                # Fix both dimensions so the widget footprint == the image pixels exactly.
+                anatomy_img.setFixedSize(scaled.width(), scaled.height())
         if anatomy_img.pixmap() is None or anatomy_img.pixmap().isNull():
             anatomy_img.setText("[Anatomical position diagram missing]")
 
-        # Put text and image side-by-side, with content aligned to the top
+        # Text expands to fill the left; image sits at its natural size on the right.
         intro_row = QHBoxLayout()
-        # Give the image more horizontal room so it can render at full width.
+        intro_row.setSpacing(12)
         intro_row.addWidget(intro_label, stretch=1)
-        intro_row.addWidget(anatomy_img, stretch=5)
+        intro_row.addWidget(anatomy_img, stretch=0)
         intro_row.setAlignment(intro_label, Qt.AlignmentFlag.AlignTop)
         intro_row.setAlignment(anatomy_img, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(intro_row)

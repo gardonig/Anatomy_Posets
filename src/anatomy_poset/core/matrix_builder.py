@@ -1,24 +1,29 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from .axis_models import AXIS_ANTERIOR_POSTERIOR, AXIS_MEDIOLATERAL, AXIS_VERTICAL, Structure
 
+# Type for a single cell in the relation matrix.
+# None = not asked yet (was -2); -1/0/+1 = answered; float [0,1] = probability summary.
+MatrixCell = Optional[Union[int, float]]
+RelationMatrix = List[List[MatrixCell]]
 
-def initial_tri_valued_relation_matrix(n: int) -> List[List[int]]:
+
+def initial_tri_valued_relation_matrix(n: int) -> RelationMatrix:
     """
     Default ``n×n`` tri-valued matrix for structures already sorted by axis CoM **descending**
     (same convention as :class:`MatrixBuilder`).
 
     - **Diagonal and strict lower triangle** (`j < i`): ``-1`` (CoM prior: row ``i`` cannot be
       strictly above column ``j`` when CoMs strictly decrease with index).
-    - **Strict upper triangle** (`j > i`): ``-2`` (not asked yet).
+    - **Strict upper triangle** (`j > i`): ``None`` (not asked yet; serialises as JSON ``null``).
 
     Expert queries only need to fill the strict upper triangle; the rest is prior or derived.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
-    M = [[-2 for _ in range(n)] for _ in range(n)]
+    M: RelationMatrix = [[None for _ in range(n)] for _ in range(n)]
     for i in range(n):
         M[i][i] = -1
         for j in range(i):
@@ -54,14 +59,14 @@ class MatrixBuilder:
     """
     Algorithm 1 (gap-based CoM strategy) with a tri-valued relation matrix M:
 
-        M[i][j] = +1  -> "i is (strictly) above j"  (YES)
-        M[i][j] =  0  -> "not sure / unknown but asked"
-        M[i][j] = -1  -> "i is not strictly above j" (NO / overlap / opposite)
-        M[i][j] = -2  -> not asked yet
+        M[i][j] = +1   -> "i is (strictly) above j"  (YES)
+        M[i][j] =  0   -> "not sure / unknown but asked"
+        M[i][j] = -1   -> "i is not strictly above j" (NO / overlap / opposite)
+        M[i][j] = None -> not asked yet  (serialises as JSON ``null``)
 
     At construction, structures are sorted by axis CoM (descending). The matrix is
     initialized with :func:`initial_tri_valued_relation_matrix` (diagonal and strict
-    lower triangle ``-1``, strict upper triangle ``-2``). Equal-CoM pairs are
+    lower triangle ``-1``, strict upper triangle ``None``). Equal-CoM pairs are
     completed by ``_apply_com_not_above_prior()``.
 
     :meth:`next_pair` only returns pairs with ``i < j`` (strict upper triangle): the
@@ -74,7 +79,7 @@ class MatrixBuilder:
     Optional ``query_allowed_indices`` (constructor keyword): if provided, :meth:`next_pair`
     only returns pairs ``(i, j)`` with both endpoints in that index set. The matrix
     remains ``n×n`` for the full structure list so saved JSON stays merge-compatible
-    across raters; cells outside the query subset may stay ``-2`` or be filled by
+    across raters; cells outside the query subset may stay ``None`` or be filled by
     propagation only.
     """
 
@@ -176,6 +181,13 @@ class MatrixBuilder:
                 t = i + g
                 i += 1
 
+                # Mirror the bilateral guard in next_pair(): same-core Left/Right pairs
+                # are silently skipped there without going through skipped_pairs.
+                if self.axis == AXIS_VERTICAL and self._symmetric_partner:
+                    ps = self._symmetric_partner.get(s)
+                    if ps is not None and ps == t:
+                        continue
+
                 if (s, t) in self.skipped_pairs:
                     continue
                 if self.path_exists_matrix(s, t):
@@ -191,7 +203,7 @@ class MatrixBuilder:
     def seal_lower_triangle_com_prior(self) -> None:
         """
         Re-apply CoM-based lower triangle (-1), bilateral symmetric NOs, and tie
-        closure. Call before persisting so JSON does not keep spurious `-2`
+        closure. Call before persisting so JSON does not keep spurious ``None``
         below the diagonal from older partial saves or loaded files.
         """
         n = self.n
@@ -218,14 +230,14 @@ class MatrixBuilder:
                 # Strict relation uses ">".
                 # If CoM is exactly equal, neither direction can be strictly above.
                 if com_a == com_b:
-                    if self.M[a][b] == -2:
+                    if self.M[a][b] is None:
                         self.M[a][b] = -1
-                    if self.M[b][a] == -2:
+                    if self.M[b][a] is None:
                         self.M[b][a] = -1
                     continue
                 if com_a > com_b:
                     # b cannot be above a
-                    if self.M[b][a] == -2:
+                    if self.M[b][a] is None:
                         self.M[b][a] = -1
 
     def _is_left_right_symmetric_pair(self, i: int, j: int) -> bool:
@@ -242,10 +254,10 @@ class MatrixBuilder:
             if i != j:
                 self.M[i][j] = -1
 
-    def _merge_cell(self, a: int, b: int, new_val: int) -> None:
+    def _merge_cell(self, a: int, b: int, new_val: MatrixCell) -> None:
         """
         Merge logic:
-        - never let -2 overwrite a more informative existing value
+        - never let None overwrite a more informative existing value
         - symmetric Left/Right same-core pairs are always forced to -1
         """
         if self._is_left_right_symmetric_pair(a, b):
@@ -253,7 +265,7 @@ class MatrixBuilder:
             return
 
         # If new_val is "not asked", keep any prior knowledge.
-        if new_val == -2 and self.M[a][b] != -2:
+        if new_val is None and self.M[a][b] is not None:
             return
 
         self.M[a][b] = new_val
@@ -281,15 +293,15 @@ class MatrixBuilder:
                 a, b = i, mi
                 for k in range(n):
                     va, vb = self.M[a][k], self.M[b][k]
-                    if va == -2 and vb == -2:
+                    if va is None and vb is None:
                         continue
-                    if va != -2 and vb == -2:
+                    if va is not None and vb is None:
                         self.M[b][k] = va
                         changed = True
-                    elif vb != -2 and va == -2:
+                    elif vb is not None and va is None:
                         self.M[a][k] = vb
                         changed = True
-                    elif va != -2 and vb != -2 and va != vb:
+                    elif va is not None and vb is not None and va != vb:
                         self.M[b][k] = va
                         changed = True
             # Column partners: for each row k, M[k][a] == M[k][b]
@@ -300,15 +312,15 @@ class MatrixBuilder:
                 a, b = j, mj
                 for k in range(n):
                     va, vb = self.M[k][a], self.M[k][b]
-                    if va == -2 and vb == -2:
+                    if va is None and vb is None:
                         continue
-                    if va != -2 and vb == -2:
+                    if va is not None and vb is None:
                         self.M[k][b] = va
                         changed = True
-                    elif vb != -2 and va == -2:
+                    elif vb is not None and va is None:
                         self.M[k][a] = vb
                         changed = True
-                    elif va != -2 and vb != -2 and va != vb:
+                    elif va is not None and vb is not None and va != vb:
                         self.M[k][b] = va
                         changed = True
 
@@ -324,8 +336,8 @@ class MatrixBuilder:
         if self.axis != AXIS_VERTICAL or not self._symmetric_partner:
             return
 
-        # Copy non--2 answers across bilateral mirrors (handles propagation / close
-        # filling one side but not the other; _merge_cell alone cannot copy -2 over known).
+        # Copy non-None answers across bilateral mirrors (handles propagation / close
+        # filling one side but not the other; _merge_cell alone cannot copy None over known).
         self._sync_vertical_bilateral_mirrors()
 
         n = self.n
@@ -334,9 +346,9 @@ class MatrixBuilder:
             for b in range(n):
                 if a == b:
                     continue
-                if self.M[a][b] == 1 and self.M[b][a] == -2:
+                if self.M[a][b] == 1 and self.M[b][a] is None:
                     self.M[b][a] = -1
-                elif self.M[a][b] == 0 and self.M[b][a] == -2:
+                elif self.M[a][b] == 0 and self.M[b][a] is None:
                     self.M[b][a] = 0
 
         # Finally, re-force symmetric pair strict NO
@@ -385,13 +397,13 @@ class MatrixBuilder:
         # if a relation is explicitly +1, the inverse must be NO (-1).
         if value == 1:
             for a, b in assigned_pairs:
-                if self.M[a][b] == 1 and self.M[b][a] == -2:
+                if self.M[a][b] == 1 and self.M[b][a] is None:
                     self.M[b][a] = -1
         # If the user answered "not sure" (0), treat the inverse query as
         # also not sure unless it was already decided.
         if value == 0:
             for a, b in assigned_pairs:
-                if self.M[a][b] == 0 and self.M[b][a] == -2:
+                if self.M[a][b] == 0 and self.M[b][a] is None:
                     self.M[b][a] = 0
 
         # Run inference after every update
@@ -455,13 +467,13 @@ class MatrixBuilder:
                         if self.M[i][k] != 1:
                             self.M[i][k] = 1
                             # Strict above is asymmetric.
-                            if self.M[k][i] == -2:
+                            if self.M[k][i] is None:
                                 self.M[k][i] = -1
                             changed = True
 
         # Transitive +1 inference above is blocked when com(i) <= com(k) even if a +1 path
         # exists in M (user answers can disagree with raw CoM). next_pair() would still
-        # skip such pairs because path_exists_matrix is True, leaving M[i][j] == -2 forever.
+        # skip such pairs because path_exists_matrix is True, leaving M[i][j] == None forever.
         self._close_transitive_unknowns()
 
         # After propagation, keep self.edges in sync with +1 entries
@@ -481,7 +493,7 @@ class MatrixBuilder:
             changed = False
             for i in range(n):
                 for j in range(n):
-                    if i == j or self.M[i][j] != -2:
+                    if i == j or self.M[i][j] is not None:
                         continue
                     ij = self.path_exists_matrix(i, j)
                     ji = self.path_exists_matrix(j, i)
@@ -490,12 +502,12 @@ class MatrixBuilder:
                         continue
                     if ij:
                         self.M[i][j] = 1
-                        if self.M[j][i] == -2:
+                        if self.M[j][i] is None:
                             self.M[j][i] = -1
                         changed = True
                     elif ji:
                         self.M[i][j] = -1
-                        if self.M[j][i] == -2:
+                        if self.M[j][i] is None:
                             self.M[j][i] = 1
                         changed = True
 
@@ -506,7 +518,7 @@ class MatrixBuilder:
         ``i < j`` (row = higher CoM index, column = lower). Never elicits diagonal or
         lower-triangle cells.
 
-        - Skips pairs where ``M[i][j] != -2`` (already answered).
+        - Skips pairs where ``M[i][j] is not None`` (already answered).
         - Skips pairs whose relation is implied by transitivity on ``+1``.
         """
         if self.finished:
@@ -534,17 +546,21 @@ class MatrixBuilder:
                         continue
 
                 # Skip if already answered in any way
-                if self.M[i][j] != -2:
+                if self.M[i][j] is not None:
                     continue
 
-                # Transitive reachability on +1 (after _close_transitive_unknowns in _propagate,
-                # ij xor ji should have closed M[i][j]; if both directions exist, +1 graph has a cycle).
+                # Transitive reachability on +1: _close_transitive_unknowns should have already
+                # sealed M[i][j] when a directed path exists. If both directions are reachable
+                # the +1 graph has a contradiction; seal the cell as 0 (ambiguous) and skip it
+                # rather than asking the user about an unresolvable cycle.
                 ij = self.path_exists_matrix(i, j)
                 ji = self.path_exists_matrix(j, i)
+                if ij and ji:
+                    self.M[i][j] = 0
+                    if self.M[j][i] is None:
+                        self.M[j][i] = 0
+                    continue
                 if ij or ji:
-                    if ij and ji:
-                        # Cycle: we cannot infer; still ask the expert
-                        return i, j
                     continue
 
                 return i, j
@@ -555,7 +571,7 @@ class MatrixBuilder:
         self.finished = True
         return None
 
-    def restore_matrix(self, M: List[List[int]]) -> None:
+    def restore_matrix(self, M: RelationMatrix) -> None:
         """Replace M and re-run propagation so ``edges`` and invariants stay consistent."""
         if len(M) != self.n or any(len(row) != self.n for row in M):
             raise ValueError("Matrix shape must match current structure count.")

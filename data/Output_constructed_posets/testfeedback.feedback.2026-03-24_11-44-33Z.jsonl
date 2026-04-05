@@ -1,5 +1,0 @@
-{"timestamp_utc": "2026-03-24T11:44:33.223164+00:00", "axis": "vertical", "question": "Is the brain strictly above the humerus?", "answer": "not_sure", "feedback": "sergaegr"}
-{"timestamp_utc": "2026-03-24T11:44:35.325463+00:00", "axis": "vertical", "question": "Is the esophagus strictly above the spinal_cord?", "answer": "yes", "feedback": "agraergaeg"}
-{"timestamp_utc": "2026-03-24T11:44:37.285084+00:00", "axis": "vertical", "question": "Is the spinal_cord strictly above the heart?", "answer": "no", "feedback": "aergaergaerg"}
-{"timestamp_utc": "2026-03-24T11:44:40.102338+00:00", "axis": "vertical", "question": "Is the heart strictly above the aorta?", "answer": "not_sure", "feedback": "aergaergaergaerg"}
-{"timestamp_utc": "2026-03-24T11:44:42.308546+00:00", "axis": "vertical", "question": "Is the aorta strictly above the spleen?", "answer": "yes", "feedback": "aergaerger"}

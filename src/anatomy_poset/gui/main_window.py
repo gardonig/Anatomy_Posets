@@ -216,7 +216,7 @@ class MainWindow(QMainWindow):
                 )
 
     def _builtposet_output_path(self, input_path: Path) -> Path:
-        """Autosave goes to Output_constructed_posets folder, not the input folder."""
+        """Autosave goes to data/posets/ folder, not the input folder."""
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         return OUTPUT_DIR / f"{input_path.stem}.poset_autosave.json"
 
