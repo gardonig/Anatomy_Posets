@@ -32,6 +32,8 @@ After **canonical sorting** by CoM on the active axis (descending), **lower tria
 5. **After each answer**, **propagation** updates the matrix: transitive **+1** chains, inverse **−1** when a side is **+1**, mirroring for left/right cores on the vertical axis, and **closure of unknowns** where reachability on **+1** edges forces a direction.  
 6. **Saved file** stores three matrices (`matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior`) plus the full **structures** list.
 
+**Bilateral structures** (e.g. “Left Lung” / “Right Lung”) on the vertical axis are merged into a single question: *”Are Left Lung and Right Lung strictly above …?”* so both sides are answered simultaneously.
+
 **Hasse diagram (poset viewer)** shows only **cover edges** derived from **+1** entries (transitive reduction of the strict “above” relation). It does **not** draw “unsure” **0** pairs.
 
 ---
@@ -45,7 +47,7 @@ The poset viewer’s **Merge JSON files…** combines several saved posets that 
 3. **Per-cell aggregation** (`matrix_aggregation.aggregate_matrices_with_counts`): for each directed pair \((i,j)\), each rater contributes **−2** (not asked), or **−1 / 0 / +1** if answered. **−2** is excluded from the mean and vote counts.
 4. **Probability matrix** (`matrix_aggregation.aggregate_to_p_yes_matrix`): for each directed pair, compute **\(P(\text{yes})=(\mu+1)/2\)** where **\(\mu\)** is the mean of answered codes only (`−2` excluded). If nobody answered that cell, the saved value is JSON **`null`**.
 5. **Hasse extraction rule**: use only edges with **`p == 1`** (strict certainty). Values in \(0 < p < 1\) are partial evidence shown in the heatmap/list summaries but not strict order edges.
-6. **Save merged** writes one JSON with **structures** in vertical-CoM order and **reindexed** mediolateral / anteroposterior matrices in `matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior` (**P(yes)** cells live there as floats / `null`). Optional **`matrix_*_n_answered`** (Σw per cell) and **`matrix_*_n_notasked`** support **weighted** re-merge of already merged files; **`save_poset_to_json`** / **`load_poset_from_json`** also accept arbitrary **`extra`** top-level fields (merge metadata).
+6. **Save merged** writes one JSON with **structures** in vertical-CoM order and **reindexed** mediolateral / anteroposterior matrices in `matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior` (**P(yes)** cells live there as floats / `null`). The default filename is composed of the stems of the merged files (e.g. `session_alice+session_bob.json`). Optional **`matrix_*_n_answered`** (Σw per cell) and **`matrix_*_n_notasked`** are stored in the JSON to support **weighted** re-merge of already-merged files, but are not shown in the matrix viewer. **`save_poset_to_json`** / **`load_poset_from_json`** also accept arbitrary **`extra`** top-level fields (merge metadata).
 
 **Chained probability merges:** Per file and cell, `μ = 2P - 1` with weight **1** unless the loaded file has **`matrix_*_n_answered ≥ 1`** at that cell (then that value is the weight). `μ` is **Σw-weighted** across files; then `P = (μ+1)/2`. Without sidecars this matches an unweighted mean of `P` when each file contributes once. **Pooling all original experts** still requires merging **raw** tri-valued sessions (or equivalent detail), not only summaries.
 
@@ -72,6 +74,10 @@ pip install -r requirements.txt
 ---
 
 ## Running the GUI
+
+### Starting a session
+
+When you click **Start**, a dialog asks whether to **Continue an existing file** (picks up where that session left off — no answers are lost) or **Create a new file** (blank session). Cancelling returns to the main window without starting. The answer buttons in the query dialog are **Yes \[F\]**, **No \[S\]**, and **Unsure \[D\]** (keyboard shortcuts in brackets).
 
 ### Via installed CLI
 
