@@ -772,7 +772,7 @@ class QueryDialog(QDialog):
         self._save_callback = save_callback
         self._feedback_log_path: Path | None = None
         self.pending_pair: Tuple[int, int] | None = None
-        # answer is True (Yes), False (No), or None ("Not sure"/skipped)
+        # answer is True (Yes), False (No), or None ("Unsure"/skipped)
         self._answer_history: List[Tuple[int, int, Optional[bool]]] = []
         # Snapshot of M before each user answer (enables correct undo for tri-valued matrix).
         self._matrix_snapshots: List[List[List[int]]] = []
@@ -912,8 +912,6 @@ class QueryDialog(QDialog):
 
         questions_layout = left_col  # content goes directly into the column
 
-        left_col.addStretch(1)  # push content to vertical center
-
         # Question card (no border inside the questions panel)
         self.question_card = QFrame()
         self.question_card.setFrameShape(QFrame.Shape.NoFrame)
@@ -921,7 +919,7 @@ class QueryDialog(QDialog):
             "QFrame { background-color: #f8f8fc; border-radius: 10px; border: none; }"
         )
         card_layout = QVBoxLayout(self.question_card)
-        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setContentsMargins(0, 12, 0, 12)
         card_layout.setSpacing(4)
         self.query_label = QLabel("")
         self.query_label.setWordWrap(True)
@@ -939,7 +937,7 @@ class QueryDialog(QDialog):
             "color: #555555; font-size: 13px; margin-top: 4px;"
         )
         card_layout.addWidget(self.com_label)
-        questions_layout.addWidget(self.question_card)
+        questions_layout.addWidget(self.question_card, stretch=1)
 
         self.feedback_box = QPlainTextEdit()
         self.feedback_box.setPlaceholderText(
@@ -962,12 +960,12 @@ class QueryDialog(QDialog):
         self.back_btn.clicked.connect(self.go_back_one_question)
         btn_row.addWidget(self.back_btn)
 
-        self.yes_btn = QPushButton("Yes  [F]")
+        self.yes_btn = QPushButton("Yes [F]")
         self.yes_btn.setStyleSheet(
             """
             QPushButton {
                 background-color: #2e7d32; color: white; border: none; border-radius: 8px;
-                padding: 4px 8px; min-width: 0px; font-size: 18px; font-weight: 600;
+                padding: 4px 0px; min-width: 0px; font-size: 18px; font-weight: 600;
             }
             QPushButton:hover:enabled { background-color: #388e3c; }
             QPushButton:pressed:enabled { background-color: #1b5e20; }
@@ -976,12 +974,12 @@ class QueryDialog(QDialog):
         )
         self.yes_btn.clicked.connect(lambda: self.answer_query(True))
 
-        self.no_btn = QPushButton("No  [S]")
+        self.no_btn = QPushButton("No [S]")
         self.no_btn.setStyleSheet(
             """
             QPushButton {
                 background-color: #c62828; color: white; border: none; border-radius: 8px;
-                padding: 4px 8px; min-width: 0px; font-size: 18px; font-weight: 600;
+                padding: 4px 0px; min-width: 0px; font-size: 18px; font-weight: 600;
             }
             QPushButton:hover:enabled { background-color: #d32f2f; }
             QPushButton:pressed:enabled { background-color: #b71c1c; }
@@ -989,13 +987,13 @@ class QueryDialog(QDialog):
             """
         )
         self.no_btn.clicked.connect(lambda: self.answer_query(False))
-        
-        self.not_sure_btn = QPushButton("Not sure  [D]")
+
+        self.not_sure_btn = QPushButton("Unsure [D]")
         self.not_sure_btn.setStyleSheet(
             """
             QPushButton {
                 background-color: #f2f2f7; color: #1a1a1a; border: 1px solid #d1d1d6; border-radius: 8px;
-                padding: 4px 8px; min-width: 0px; font-size: 16px; font-weight: 600;
+                padding: 4px 0px; min-width: 0px; font-size: 16px; font-weight: 600;
             }
             QPushButton:hover:enabled { background-color: #e5e5ea; }
             QPushButton:pressed:enabled { background-color: #d1d1d6; }
@@ -1087,7 +1085,7 @@ class QueryDialog(QDialog):
         overview_layout.addWidget(overview_link)
 
         # Add the middle column widget to the splitter
-        splitter.addWidget(_wrap_column("Questions", middle_widget, 1, min_expanded=460))
+        splitter.addWidget(_wrap_column("Questions", middle_widget, 1, min_expanded=360))
 
         # Left column: Anatomy Images
         anatomy_group = QGroupBox()
@@ -1262,9 +1260,9 @@ class QueryDialog(QDialog):
             return
         try:
             if self._feedback_log_path is None:
-                base_dir = self._autosave_path.parent
+                feedback_dir = self._autosave_path.parent / "feedback"
                 stem = self._autosave_path.stem
-                self._feedback_log_path = base_dir / f"{stem}.feedback.jsonl"
+                self._feedback_log_path = feedback_dir / f"{stem}.feedback.jsonl"
 
             if answer_label is not None:
                 answer_str = answer_label
@@ -1319,7 +1317,7 @@ class QueryDialog(QDialog):
         verb = _relation_verb(self._axis)
         name_i = self._display_name(i, si.name)
         name_j = self._display_name(j, sj.name)
-        subj_verb = "Are" if _is_plural_structure(name_i) else "Is"
+        subj_verb = "Are" if (" and " in name_i or _is_plural_structure(name_i)) else "Is"
         self.query_label.setText(f"{subj_verb} the {name_i} {verb} the {name_j}?")
         # Center of mass information: individual values and mean for the current axis
         if self._axis == AXIS_VERTICAL:
@@ -1412,7 +1410,7 @@ class QueryDialog(QDialog):
         verb = _relation_verb(self._axis)
         name_i = self._display_name(last_i, si.name)
         name_j = self._display_name(last_j, sj.name)
-        subj_verb = "Are" if _is_plural_structure(name_i) else "Is"
+        subj_verb = "Are" if (" and " in name_i or _is_plural_structure(name_i)) else "Is"
         self.query_label.setText(f"(Correcting) {subj_verb} the {name_i} {verb} the {name_j}?")
         # Refresh CoM info for the corrected pair
         if self._axis == AXIS_VERTICAL:
@@ -1460,17 +1458,6 @@ class QueryDialog(QDialog):
             value = int(100 * (asked / total) ** 0.5)
         self.progress_bar.setValue(value)
 
-    def _pluralize_core(self, core: str) -> str:
-        """One word for the query: e.g. Lung -> lungs, Kidney -> kidneys."""
-        s = core.lower()
-        if not s:
-            return s
-        if s.endswith("y") and len(s) > 1 and s[-2] not in "aeiou":
-            return s[:-1] + "ies"
-        if s.endswith("s"):
-            return s
-        return s + "s"
-
     def _bilateral_core_for_index(self, idx: int) -> Optional[str]:
         """Singular core name for this structure if it is a bilateral side, else None (for CoM lookup)."""
         if idx < 0 or idx >= len(self.poset_builder.structures):
@@ -1485,8 +1472,8 @@ class QueryDialog(QDialog):
         if self._axis != AXIS_VERTICAL:
             return original
 
-        name = original.strip()
-        _side, core = parse_bilateral_core(name)
-        if core and core in self._bilateral_cores:
-            return self._pluralize_core(core)
-        return original
+        partner_idx = self.poset_builder._symmetric_partner.get(idx)
+        if partner_idx is None:
+            return original.strip()
+        partner_name = self.poset_builder.structures[partner_idx].name.strip()
+        return f"{original.strip()} and {partner_name}"

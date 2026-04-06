@@ -409,32 +409,70 @@ class MainWindow(QMainWindow):
 
         self.start_btn.setEnabled(False)
 
-        # 1) Ask where to save this query's autosave file before starting.
-        # If the user points to an existing poset file, we load it and continue
-        # where it left off (only the current axis matrix is overwritten on save;
-        # other axes stay intact). We show an info dialog after a successful load.
-        # If they choose a new path, we create a blank poset file containing all
-        # structures and empty matrices for all three axes.
-        # (The system file dialog may still ask to "replace" an existing path—that
-        # only confirms the filename; it does not wipe the file before we load it.)
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        suggested = self._autosave_path or self._builtposet_output_path(Path("poset_autosave.json"))
-        save_path_str, _ = QFileDialog.getSaveFileName(
-            self,
-            "Choose where to save this query's poset",
-            str(suggested.parent),
-            "JSON Files (*.json);;All Files (*)",
+
+        # Ask whether to continue from an existing file or start fresh
+        _msg = QMessageBox(self)
+        _msg.setWindowTitle("Start session")
+        _msg.setText("Continue from an existing file, or create a new one?")
+        _msg.setInformativeText(
+            "Continuing an existing file picks up where you left off — no answers are lost."
         )
-        if not save_path_str:
-            # User cancelled save-location selection; abort starting the query.
+        _continue_btn = _msg.addButton("Continue existing file", QMessageBox.ButtonRole.AcceptRole)
+        _msg.addButton("Create new file", QMessageBox.ButtonRole.RejectRole)
+        _msg.addButton(QMessageBox.StandardButton.Cancel)
+        _msg.exec()
+
+        clicked = _msg.clickedButton()
+        if clicked is None or clicked is _msg.button(QMessageBox.StandardButton.Cancel):
             self.start_btn.setEnabled(True)
             return
 
-        self._autosave_path = Path(save_path_str)
+        if clicked is _continue_btn:
+            open_path_str, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select saved poset file to continue from",
+                str(OUTPUT_DIR),
+                "JSON Files (*.json);;All Files (*)",
+            )
+        else:
+            open_path_str = ""
 
-        # If this is a brand-new output file, initialize it with all structures
-        # and empty matrices for all axes so subsequent queries can fill it.
-        if not self._autosave_path.exists():
+        if open_path_str:
+            # Continue from existing file
+            self._autosave_path = Path(open_path_str)
+            try:
+                poset = load_poset_from_json(str(self._autosave_path))
+                structures = poset.structures
+                self._matrix_vertical = poset.matrix_vertical
+                self._matrix_mediolateral = poset.matrix_mediolateral
+                self._matrix_anteroposterior = poset.matrix_anteroposterior
+            except Exception:
+                QMessageBox.warning(
+                    self,
+                    "Failed to load file",
+                    "Could not read the selected file.\n\n"
+                    "The session was not started.",
+                )
+                self.start_btn.setEnabled(True)
+                return
+        else:
+            # Start new session
+            suggested = self._autosave_path or self._builtposet_output_path(Path("poset_autosave.json"))
+            save_path_str, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save new poset as",
+                str(suggested.parent),
+                "JSON Files (*.json);;All Files (*)",
+                options=QFileDialog.Option.DontConfirmOverwrite
+            )
+            if not save_path_str:
+                self.start_btn.setEnabled(True)
+                return
+
+            self._autosave_path = Path(save_path_str)
+
+            # Initialize new file with all structures and empty matrices
             n = len(structures)
             empty = initial_tri_valued_relation_matrix(n)
             self._matrix_vertical = [row[:] for row in empty]
@@ -447,35 +485,6 @@ class MainWindow(QMainWindow):
                 self._matrix_mediolateral,
                 self._matrix_anteroposterior,
             )
-        else:
-            # Existing output selected: load all three axes so we only overwrite
-            # the axis currently being queried and preserve the other two.
-            try:
-                poset = load_poset_from_json(str(self._autosave_path))
-                # Keep index consistency with the selected output file by using
-                # its structure ordering for continuation.
-                structures = poset.structures
-
-                self._matrix_vertical = poset.matrix_vertical
-                self._matrix_mediolateral = poset.matrix_mediolateral
-                self._matrix_anteroposterior = poset.matrix_anteroposterior
-                QMessageBox.information(
-                    self,
-                    "Continuing from saved file",
-                    "You chose an existing poset file. Nothing in it is discarded: "
-                    "structures and the matrices for the other axes are kept as saved. "
-                    "Only the axis you are about to query will be updated when you save.\n\n"
-                    "The query will pick up where this file left off for that session.",
-                )
-            except Exception:
-                QMessageBox.warning(
-                    self,
-                    "Failed to load existing output",
-                    "Could not read the selected output file.\n\n"
-                    "To avoid deleting existing data, the query was not started.",
-                )
-                self.start_btn.setEnabled(True)
-                return
 
         query_allowed = query_allowed_indices_for_regions(
             structures,

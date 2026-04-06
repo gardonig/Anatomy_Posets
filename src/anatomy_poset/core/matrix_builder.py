@@ -60,7 +60,7 @@ class MatrixBuilder:
     Algorithm 1 (gap-based CoM strategy) with a tri-valued relation matrix M:
 
         M[i][j] = +1   -> "i is (strictly) above j"  (YES)
-        M[i][j] =  0   -> "not sure / unknown but asked"
+        M[i][j] =  0   -> "unsure / unknown but asked"
         M[i][j] = -1   -> "i is not strictly above j" (NO / overlap / opposite)
         M[i][j] = None -> not asked yet  (serialises as JSON ``null``)
 
@@ -359,7 +359,7 @@ class MatrixBuilder:
         value ∈ {+1, -1, 0}.
 
         +1 -> i above j
-         0 -> not sure
+         0 -> unsure
         -1 -> i not strictly above j
 
         The query UI only asks pairs with ``i < j``; bilateral mirroring may call this
@@ -399,8 +399,8 @@ class MatrixBuilder:
             for a, b in assigned_pairs:
                 if self.M[a][b] == 1 and self.M[b][a] is None:
                     self.M[b][a] = -1
-        # If the user answered "not sure" (0), treat the inverse query as
-        # also not sure unless it was already decided.
+        # If the user answered "unsure" (0), treat the inverse query as
+        # also unsure unless it was already decided.
         if value == 0:
             for a, b in assigned_pairs:
                 if self.M[a][b] == 0 and self.M[b][a] is None:
@@ -410,7 +410,7 @@ class MatrixBuilder:
         self._propagate()
 
     def record_unknown(self, i: int, j: int) -> None:
-        """Explicitly mark a queried pair as unknown/not sure."""
+        """Explicitly mark a queried pair as unknown/unsure."""
         self.record_response_matrix(i, j, 0)
 
     def path_exists_matrix(self, start: int, end: int) -> bool:

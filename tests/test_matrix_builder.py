@@ -252,7 +252,7 @@ def test_no_pair_asked_twice_exhaustive_no() -> None:
 
 
 def test_no_pair_asked_twice_exhaustive_not_sure() -> None:
-    """Drive the builder to completion answering every question NOT SURE; verify no pair twice."""
+    """Drive the builder to completion answering every question UNSURE; verify no pair twice."""
     mb, _ = _make_bilateral_builder()
     seen: set[tuple[int, int]] = set()
     while True:
@@ -368,7 +368,7 @@ def test_double_mirror_no_answer_propagates_correctly() -> None:
 
 def test_double_mirror_not_sure_propagates_correctly() -> None:
     """
-    Answering NOT SURE for (Left Lung, Left Kidney) should mirror 0 to all four cells.
+    Answering UNSURE for (Left Lung, Left Kidney) should mirror 0 to all four cells.
     """
     mb, idx = _make_bilateral_builder()
     l_lung   = idx["Left Lung"]
@@ -437,7 +437,7 @@ def test_upper_triangle_fully_filled_after_exhaustion_yes() -> None:
 
 
 def test_upper_triangle_fully_filled_after_exhaustion_not_sure() -> None:
-    """After driving to completion with NOT SURE, no upper-triangle cell should be None."""
+    """After driving to completion with UNSURE, no upper-triangle cell should be None."""
     mb, _ = _make_bilateral_builder()
     while True:
         pair = mb.next_pair()

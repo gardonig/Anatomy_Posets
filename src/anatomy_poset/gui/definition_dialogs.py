@@ -281,12 +281,12 @@ class MediolateralDefinitionDialog(QDialog):
 
         # Right column: two examples side-by-side (text above image)
         right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=8)
+        content.addLayout(right_col, stretch=5)
 
         _img_dir = ASSETS_DIR / "definition_images"
         screen = QGuiApplication.primaryScreen()
         avail_h = screen.availableGeometry().height() if screen is not None else 900
-        img_height = max(720, int(avail_h * 0.84))
+        img_height = max(720, int(avail_h * 0.90))
 
         img_style = IMG_STYLE_DEFAULT
 
@@ -296,7 +296,7 @@ class MediolateralDefinitionDialog(QDialog):
 
         examples_col = QVBoxLayout()
         examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=4)
+        examples_and_com.addLayout(examples_col, stretch=3)
 
         # Example (Yes)
         yes_col = QVBoxLayout()
@@ -349,7 +349,7 @@ class MediolateralDefinitionDialog(QDialog):
 
         # CoM explanation + image to the right of the examples
         com_col = QVBoxLayout()
-        examples_and_com.addLayout(com_col, stretch=2)
+        examples_and_com.addLayout(com_col, stretch=3)
 
         com_heading = QLabel("Center of mass (CoM)")
         com_heading.setStyleSheet(_heading_style)
@@ -435,7 +435,7 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         # Left column: text (task, definition, question form)
         left_col = QVBoxLayout()
-        content.addLayout(left_col, stretch=6)
+        content.addLayout(left_col, stretch=2)
 
         heading = QLabel('Anteroposterior relation: "strictly in front of"')
         heading.setStyleSheet(_heading_style)
@@ -462,14 +462,14 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         # Right column: two examples side-by-side (text above image)
         right_col = QVBoxLayout()
-        content.addLayout(right_col, stretch=6)
+        content.addLayout(right_col, stretch=5)
 
         img_style = IMG_STYLE_DEFAULT
 
         _img_dir = ASSETS_DIR / "definition_images"
         screen = QGuiApplication.primaryScreen()
         avail_h = screen.availableGeometry().height() if screen is not None else 900
-        img_height = max(720, int(avail_h * 0.84))
+        img_height = max(720, int(avail_h * 0.90))
 
         # Left: examples stacked vertically, Right: CoM explanation + image
         examples_and_com = QHBoxLayout()
@@ -477,7 +477,7 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         examples_col = QVBoxLayout()
         examples_col.setSpacing(16)
-        examples_and_com.addLayout(examples_col, stretch=4)
+        examples_and_com.addLayout(examples_col, stretch=3)
 
         # Example (Yes)
         yes_col = QVBoxLayout()
@@ -528,7 +528,7 @@ class AnteroposteriorDefinitionDialog(QDialog):
 
         # CoM explanation + image to the right of the examples
         com_col = QVBoxLayout()
-        examples_and_com.addLayout(com_col, stretch=2)
+        examples_and_com.addLayout(com_col, stretch=3)
 
         com_heading = QLabel("Center of mass (CoM)")
         com_heading.setStyleSheet(_heading_style)

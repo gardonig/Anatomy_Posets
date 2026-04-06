@@ -14,20 +14,20 @@ For each anatomical axis (vertical, mediolateral, anteroposterior), the app main
 | Entry | Meaning |
 |-------|---------|
 | **+1** | Structure \(i\) is **strictly above** structure \(j\) along that axis (directed “yes”). |
-| **0** | The pair was **asked**; the expert is **not sure** (still directional). |
+| **0** | The pair was **asked**; the expert is **unsure** (still directional). |
 | **−1** | \(i\) is **not** strictly above \(j\) (includes “no”, overlap, or opposite direction implied by the CoM prior). |
-| **−2** | **Not asked yet** (or never queried for that directed cell). |
+| **null** | **Not asked yet** (or never queried for that directed cell). |
 
-**Diagonal** entries are fixed to **−1** (self-relations are not “strictly above”).  
-After **canonical sorting** by CoM on the active axis (descending), **lower triangle** entries with **column index \(j < i\)** are **sealed** to **−1**: in that order, structure \(i\) cannot lie strictly above \(j\) on the \(i\!>\!j\) side of the diagonal. The **strict upper triangle** (\(j > i\) in row-major layout) is where expert queries and inference fill **+1**, **0**, or **−1**; **−2** is “still open”.
+**Diagonal** entries are fixed to **−1** (self-relations are not “strictly above”).
+After **canonical sorting** by CoM on the active axis (descending), **lower triangle** entries with **column index \(j < i\)** are **sealed** to **−1**: in that order, structure \(i\) cannot lie strictly above \(j\) on the \(i\!>\!j\) side of the diagonal. The **strict upper triangle** (\(j > i\) in row-major layout) is where expert queries and inference fill **+1**, **0**, or **−1**; **null** is “still open”.
 
 ---
 
 ## How the matrix is built (algorithm)
 
 1. **Sort structures** by the chosen axis CoM (descending), matching `matrix_builder.MatrixBuilder`.
-2. **Initialize** \(M\): diagonal **−1**, lower triangle **−1**, upper triangle **−2** (plus bilateral / equal-CoM rules as implemented).
-3. **Gap-based queries** (`next_pair`): pairs \((i, j)\) with \(j = i + \text{gap}\) are considered in order of increasing gap (1, 2, …). Pairs already decided (not **−2**), implied by **transitive +1** reachability, or skipped by vertical bilateral symmetry rules are not asked again.
+2. **Initialize** \(M\): diagonal **−1**, lower triangle **−1**, upper triangle **null** (plus bilateral / equal-CoM rules as implemented).
+3. **Gap-based queries** (`next_pair`): pairs \((i, j)\) with \(j = i + \text{gap}\) are considered in order of increasing gap (1, 2, …). Pairs already decided (not **null**), implied by **transitive +1** reachability, or skipped by vertical bilateral symmetry rules are not asked again.
 4. **Optional region subsets**: you can restrict **which pairs are asked** to those whose **both** endpoints lie in selected body-region presets; the **saved JSON still lists every structure** and the same **n×n** matrix size so merges stay compatible.
 5. **After each answer**, **propagation** updates the matrix: transitive **+1** chains, inverse **−1** when a side is **+1**, mirroring for left/right cores on the vertical axis, and **closure of unknowns** where reachability on **+1** edges forces a direction.  
 6. **Saved file** stores three matrices (`matrix_vertical`, `matrix_mediolateral`, `matrix_anteroposterior`) plus the full **structures** list.
@@ -84,7 +84,7 @@ anatomy-poset
 To start with a specific structures file (new CoMs):
 
 ```bash
-anatomy-poset data/Input_CoM_structures/test_structures_2.json
+anatomy-poset data/structures/test_structures_2.json
 ```
 
 ### Via `run.py` (no installation)
@@ -98,14 +98,14 @@ python run.py
 With an explicit input file:
 
 ```bash
-python run.py data/Input_CoM_structures/test_structures_2.json
+python run.py data/structures/test_structures_2.json
 ```
 
 ---
 
 ## Input JSON format
 
-Example (`data/Input_CoM_structures/test_structures.json`):
+Example (`data/structures/test_structures.json`):
 
 ```json
 {
@@ -127,7 +127,7 @@ Example (`data/Input_CoM_structures/test_structures.json`):
 - **`com_anteroposterior`**: CoM along the back–front (anteroposterior) axis, scaled to \([0, 100]\):  
   `0` = back / dorsal side, `100` = front / ventral side.
 
-Output posets are saved under `data/Output_constructed_posets/` (autosave triggers during each query).
+Output posets are saved under `data/posets/` (organized by `tests/`, `clinician_sessions/`, and `merged_sessions/` subdirectories). Autosave triggers during each query.
 
 ---
 

@@ -24,7 +24,7 @@ For each anatomical axis (vertical, mediolateral, anteroposterior), the app main
 | Entry | Meaning |
 |-------|---------|
 | **+1** | Structure \(i\) is **strictly above** structure \(j\) along that axis (directed “yes”). |
-| **0** | The pair was **asked**; the expert is **not sure** (still directional). |
+| **0** | The pair was **asked**; the expert is **unsure** (still directional). |
 | **−1** | \(i\) is **not** strictly above \(j\) (includes “no”, overlap, or opposite direction implied by the CoM prior). |
 | **−2** | **Not asked yet** (or never queried for that directed cell). |
 

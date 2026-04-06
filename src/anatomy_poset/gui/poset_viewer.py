@@ -272,6 +272,7 @@ class PosetViewer(QWidget):
         self._M_anteroposterior: List[List[Union[int, float]]] = []
         self._merged_mode: bool = False
         self._merge_k: int = 0
+        self._merged_paths: List[str] = []
         self._agg_vertical: Optional[List[List[CellAggregate]]] = None
         self._agg_mediolateral: Optional[List[List[CellAggregate]]] = None
         self._agg_anteroposterior: Optional[List[List[CellAggregate]]] = None
@@ -362,7 +363,11 @@ class PosetViewer(QWidget):
         self._load_from_path(path)
 
     def _open_feedback_file(self) -> None:
-        start_dir = str(Path(self._path).resolve().parent) if self._path else str(OUTPUT_DIR)
+        if self._path:
+            feedback_dir = Path(self._path).resolve().parent / "feedback"
+        else:
+            feedback_dir = OUTPUT_DIR / "feedback"
+        start_dir = str(feedback_dir if feedback_dir.exists() else feedback_dir.parent)
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open feedback log",
@@ -494,6 +499,7 @@ class PosetViewer(QWidget):
         self._path = path
         self._merged_mode = False
         self._merge_k = 0
+        self._merged_paths = []
         self._agg_vertical = None
         self._agg_mediolateral = None
         self._agg_anteroposterior = None
@@ -516,10 +522,15 @@ class PosetViewer(QWidget):
                 "Merge at least two JSON files first; then you can save the probability matrix.",
             )
             return
+        if self._merged_paths:
+            stems = "+".join(Path(p).stem for p in self._merged_paths)
+            default_name = f"{stems}.json"
+        else:
+            default_name = "merged_probability.json"
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save merged probability matrix",
-            str(OUTPUT_DIR / "merged_probability.json"),
+            str(OUTPUT_DIR / "merged_sessions" / default_name),
             "JSON (*.json);;All Files (*)",
         )
         if not path:
@@ -597,6 +608,8 @@ class PosetViewer(QWidget):
             str(OUTPUT_DIR),
             "JSON (*.json);;All Files (*)",
         )
+        if len(paths) == 0:
+            return
         if len(paths) < 2:
             QMessageBox.information(
                 self,
@@ -686,6 +699,7 @@ class PosetViewer(QWidget):
             )
             return
         self._merge_k = k1
+        self._merged_paths = paths
         self._M_vertical = aggregate_to_p_yes_matrix(self._agg_vertical)
         self._M_mediolateral = aggregate_to_p_yes_matrix(self._agg_mediolateral)
         self._M_anteroposterior = aggregate_to_p_yes_matrix(self._agg_anteroposterior)
@@ -734,33 +748,16 @@ class PosetViewer(QWidget):
                 return False
         return True
 
-    def _use_probability_matrix_view(
-        self,
-        M: List[List[Union[int, float]]],
-        n_answered: Optional[List[List[Optional[int]]]] = None,
-        n_notasked: Optional[List[List[Optional[int]]]] = None,
-    ) -> bool:
-        """
-        Whether to show P(yes) heatmaps (and optional count panels), not tri-valued {-1,0,1,-2}.
-
-        Merged single-file saves often have only ``0``/``1``/null off-diagonal (no fractional
-        ``p``), which fails :meth:`_is_probability_matrix`; we also treat saved sidecars or
-        probability diagonal convention as probability mode.
-        """
-        if self._is_probability_matrix(M):
-            return True
-        if n_answered is not None or n_notasked is not None:
-            return True
-        return self._saved_p_diagonal_convention(M)
+    def _use_probability_matrix_view(self, M: List[List[Union[int, float]]]) -> bool:
+        """Whether to show P(yes) heatmap, not tri-valued {-1,0,1,-2}."""
+        return self._is_probability_matrix(M) or self._saved_p_diagonal_convention(M)
 
     def _unsure_edges_from_matrix(
         self,
         M: List[List[Union[int, float]]],
-        n_answered: Optional[List[List[Optional[int]]]] = None,
-        n_notasked: Optional[List[List[Optional[int]]]] = None,
     ) -> Set[Tuple[int, int]]:
         """Directed pairs with value 0 (discrete mode only)."""
-        if self._use_probability_matrix_view(M, n_answered, n_notasked):
+        if self._use_probability_matrix_view(M):
             return set()
         out: Set[Tuple[int, int]] = set()
         n = len(M)
@@ -857,9 +854,6 @@ class PosetViewer(QWidget):
         M: List[List[Union[int, float]]],
         axis_label: str,
         relation_label: str,
-        *,
-        n_answered: Optional[List[List[Optional[int]]]] = None,
-        n_notasked: Optional[List[List[Optional[int]]]] = None,
     ) -> None:
         list_widget.clear()
         if self._merged_mode:
@@ -886,7 +880,7 @@ class PosetViewer(QWidget):
             list_widget.addItem("No matrix data available for this axis.")
             edges: Set[Tuple[int, int]] = set()
         else:
-            is_prob = self._use_probability_matrix_view(M, n_answered, n_notasked)
+            is_prob = self._use_probability_matrix_view(M)
             if is_prob:
                 p1, partial, zero_or_missing = self._probability_summary_counts(M)
                 list_widget.addItem("Probability matrix summary (off-diagonal entries):")
@@ -897,7 +891,7 @@ class PosetViewer(QWidget):
                 yes, unsure, no, not_asked = self._matrix_summary_counts(M)
                 list_widget.addItem("Matrix summary (off-diagonal entries):")
                 list_widget.addItem(f"  +1 (YES / above): {yes}")
-                list_widget.addItem(f"   0 (not sure):   {unsure}")
+                list_widget.addItem(f"   0 (unsure):      {unsure}")
                 list_widget.addItem(f"  -1 (NO / not-above): {no}")
                 list_widget.addItem(f"  null (not asked yet): {not_asked}")
             list_widget.addItem("")
@@ -916,7 +910,7 @@ class PosetViewer(QWidget):
                 for u, v in sorted(edges):
                     su, sv = structures[u], structures[v]
                     list_widget.addItem(f"{su.name}  ≻  {sv.name}")
-            n_unsure = len(self._unsure_edges_from_matrix(M, n_answered, n_notasked))
+            n_unsure = len(self._unsure_edges_from_matrix(M))
             if n_unsure:
                 list_widget.addItem("")
                 list_widget.addItem(
@@ -1049,7 +1043,7 @@ class PosetViewer(QWidget):
         self, agg: List[List[CellAggregate]], title: str, label_structures: List[Structure]
     ) -> None:
         """
-        Merged matrices: P(yes) heatmap plus n_answered (Σw) and n_notasked grids side by side.
+        Merged matrices: P(yes) heatmap.
 
         After CoM sort + seal, lower triangle (j < i) is -1 for every rater → μ=-1 → P=0 (red),
         so 0.5 (orange) can only appear in the strict upper triangle (j > i), not in full rows/columns.
@@ -1057,23 +1051,18 @@ class PosetViewer(QWidget):
         mk = self._merge_k if self._merge_k > 0 else None
         Z, ann, _ = cell_aggregate_to_display_matrix(agg, merge_k=mk)
         n = len(Z)
-        na_grid = aggregate_to_n_answered_matrix(agg)
-        nn_grid = aggregate_to_n_notasked_matrix(agg)
         Z_masked = np.ma.masked_invalid(np.asarray(Z, dtype=float))
-        Na_masked = self._count_grid_to_masked(na_grid, n)
-        Nn_masked = self._count_grid_to_masked(nn_grid, n)
         labels = self._matrix_labels(n, label_structures)
 
         dlg = QDialog(None)
-        dlg.setWindowTitle(f"{title} — merged P(yes) + counts")
-        dlg.resize(1400, 720)
+        dlg.setWindowTitle(f"{title} — merged P(yes)")
+        dlg.resize(720, 700)
         dlg.setModal(False)
         layout = QVBoxLayout(dlg)
 
-        # tight_layout + several colorbars squeezes later subplots to zero width; constrained works.
-        fig = Figure(figsize=(17, 6.0), constrained_layout=True)
+        fig = Figure(figsize=(6.5, 6.0), constrained_layout=True)
         canvas = FigureCanvas(fig)
-        canvas.setMinimumSize(1100, 480)
+        canvas.setMinimumSize(480, 480)
         try:
             from matplotlib.backends.backend_qt5 import NavigationToolbar2QT
 
@@ -1081,23 +1070,17 @@ class PosetViewer(QWidget):
         except Exception:
             pass
 
-        gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 1], wspace=0.25)
-        ax0 = fig.add_subplot(gs[0, 0])
-        ax1 = fig.add_subplot(gs[0, 1], sharey=ax0)
-        ax2 = fig.add_subplot(gs[0, 2], sharey=ax0)
+        ax0 = fig.add_subplot(111)
 
         try:
             from matplotlib import colormaps
 
             cmap_p = colormaps["RdYlGn"].copy()
-            cmap_n = colormaps["viridis"].copy()
         except Exception:
             from matplotlib import pyplot as plt
 
             cmap_p = plt.cm.get_cmap("RdYlGn").copy()
-            cmap_n = plt.cm.get_cmap("viridis").copy()
         cmap_p.set_bad("#dddddd")
-        cmap_n.set_bad("#dddddd")
 
         im0 = ax0.imshow(Z_masked, cmap=cmap_p, vmin=0.0, vmax=1.0, origin="upper")
         self._apply_axis_labels(ax0, n, labels, title="P(yes)", show_ylabel=True)
@@ -1117,53 +1100,7 @@ class PosetViewer(QWidget):
                         zorder=4,
                     )
         cb0 = fig.colorbar(im0, ax=ax0, shrink=0.82, pad=0.02)
-        cb0.set_label("P(yes) = (μ+1)/2 over answered (−2 excluded)")
-
-        na_max = float(np.nanmax(Na_masked.filled(np.nan))) if Na_masked.size else 0.0
-        vmax_na = max(na_max, 1.0)
-        im1 = ax1.imshow(Na_masked, cmap=cmap_n, vmin=0.0, vmax=vmax_na, origin="upper")
-        self._apply_axis_labels(ax1, n, labels, title="n_answered (Σw)", show_ylabel=False)
-        if n <= 12:
-            for i in range(n):
-                for j in range(n):
-                    v = Na_masked[i, j]
-                    if not np.ma.is_masked(v):
-                        fv = float(v)
-                        ax1.text(
-                            j,
-                            i,
-                            str(int(fv)),
-                            ha="center",
-                            va="center",
-                            fontsize=5,
-                            color="white" if fv > vmax_na * 0.55 else "black",
-                            zorder=4,
-                        )
-        cb1 = fig.colorbar(im1, ax=ax1, shrink=0.82, pad=0.02)
-        cb1.set_label("Effective answer weight")
-
-        nn_max = float(np.nanmax(Nn_masked.filled(np.nan))) if Nn_masked.size else 0.0
-        vmax_nn = max(nn_max, 1.0)
-        im2 = ax2.imshow(Nn_masked, cmap=cmap_n, vmin=0.0, vmax=vmax_nn, origin="upper")
-        self._apply_axis_labels(ax2, n, labels, title="n_notasked (per file)", show_ylabel=False)
-        if n <= 12:
-            for i in range(n):
-                for j in range(n):
-                    v = Nn_masked[i, j]
-                    if not np.ma.is_masked(v):
-                        fv = float(v)
-                        ax2.text(
-                            j,
-                            i,
-                            str(int(fv)),
-                            ha="center",
-                            va="center",
-                            fontsize=5,
-                            color="white" if fv > vmax_nn * 0.55 else "black",
-                            zorder=4,
-                        )
-        cb2 = fig.colorbar(im2, ax=ax2, shrink=0.82, pad=0.02)
-        cb2.set_label("Files with −2 / missing")
+        cb0.set_label("P(yes) = (μ+1)/2 over answered")
 
         fig.suptitle(title, fontsize=11)
         layout.addWidget(canvas, stretch=1)
@@ -1178,11 +1115,8 @@ class PosetViewer(QWidget):
         M: List[List[Union[int, float]]],
         title: str,
         label_structures: List[Structure],
-        *,
-        n_answered: Optional[List[List[Optional[int]]]] = None,
-        n_notasked: Optional[List[List[Optional[int]]]] = None,
     ) -> None:
-        """Display a probability matrix heatmap; optional count sidecars in adjacent panels."""
+        """Display a probability matrix heatmap."""
         if not M:
             QMessageBox.information(self, "No data", f"No matrix data available for {title}.")
             return
@@ -1202,26 +1136,15 @@ class PosetViewer(QWidget):
 
         Z_masked = np.ma.masked_invalid(Z)
         labels = self._matrix_labels(n, label_structures)
-        show_na = n_answered is not None
-        show_nn = n_notasked is not None
-        ncols = 1 + int(show_na) + int(show_nn)
 
         dlg = QDialog(None)
-        dlg.setWindowTitle(
-            f"{title} — probability" + (" + counts" if ncols > 1 else "") + " heatmap"
-        )
-        dlg.resize(300 + 480 * ncols, 720 if ncols > 1 else 700)
+        dlg.setWindowTitle(f"{title} — probability heatmap")
+        dlg.resize(720, 700)
         dlg.setModal(False)
         layout = QVBoxLayout(dlg)
 
-        fig_w = 5.5 + 5.0 * (ncols - 1)
-        fig = Figure(
-            figsize=(max(fig_w, 5.5), 5.8 if ncols > 1 else 6),
-            constrained_layout=bool(ncols > 1),
-        )
+        fig = Figure(figsize=(6.5, 6.0), constrained_layout=False)
         canvas = FigureCanvas(fig)
-        if ncols > 1:
-            canvas.setMinimumSize(300 + 360 * ncols, 480)
         try:
             from matplotlib.backends.backend_qt5 import NavigationToolbar2QT
 
@@ -1233,83 +1156,17 @@ class PosetViewer(QWidget):
             from matplotlib import colormaps
 
             cmap_p = colormaps["RdYlGn"].copy()
-            cmap_n = colormaps["viridis"].copy()
         except Exception:
             from matplotlib import pyplot as plt
 
             cmap_p = plt.cm.get_cmap("RdYlGn").copy()
-            cmap_n = plt.cm.get_cmap("viridis").copy()
         cmap_p.set_bad("#dddddd")
-        cmap_n.set_bad("#dddddd")
 
-        gs = None
-        if ncols > 1:
-            gs = fig.add_gridspec(1, ncols, width_ratios=[1] * ncols, wspace=0.25)
-            ax0 = fig.add_subplot(gs[0, 0])
-        else:
-            ax0 = fig.add_subplot(111)
+        ax0 = fig.add_subplot(111)
         im0 = ax0.imshow(Z_masked, cmap=cmap_p, vmin=0.0, vmax=1.0, origin="upper")
         self._apply_axis_labels(ax0, n, labels, title="P(yes)", show_ylabel=True)
-        fig.colorbar(im0, ax=ax0, shrink=0.82 if ncols > 1 else 0.9, pad=0.02).set_label(
-            "P(yes)"
-        )
-
-        grid_col = 1
-        if show_na:
-            assert gs is not None
-            ax1 = fig.add_subplot(gs[0, grid_col], sharey=ax0)
-            grid_col += 1
-            Na_masked = self._count_grid_to_masked(n_answered, n)
-            na_max = float(np.nanmax(Na_masked.filled(np.nan))) if Na_masked.size else 0.0
-            vmax_na = max(na_max, 1.0)
-            im1 = ax1.imshow(Na_masked, cmap=cmap_n, vmin=0.0, vmax=vmax_na, origin="upper")
-            self._apply_axis_labels(ax1, n, labels, title="n_answered (Σw)", show_ylabel=False)
-            if n <= 12:
-                for i in range(n):
-                    for j in range(n):
-                        v = Na_masked[i, j]
-                        if not np.ma.is_masked(v):
-                            fv = float(v)
-                            ax1.text(
-                                j,
-                                i,
-                                str(int(fv)),
-                                ha="center",
-                                va="center",
-                                fontsize=5,
-                                color="white" if fv > vmax_na * 0.55 else "black",
-                                zorder=4,
-                            )
-            fig.colorbar(im1, ax=ax1, shrink=0.82, pad=0.02).set_label("Σw")
-
-        if show_nn:
-            assert gs is not None
-            ax2 = fig.add_subplot(gs[0, grid_col], sharey=ax0)
-            Nn_masked = self._count_grid_to_masked(n_notasked, n)
-            nn_max = float(np.nanmax(Nn_masked.filled(np.nan))) if Nn_masked.size else 0.0
-            vmax_nn = max(nn_max, 1.0)
-            im2 = ax2.imshow(Nn_masked, cmap=cmap_n, vmin=0.0, vmax=vmax_nn, origin="upper")
-            self._apply_axis_labels(ax2, n, labels, title="n_notasked", show_ylabel=False)
-            if n <= 12:
-                for i in range(n):
-                    for j in range(n):
-                        v = Nn_masked[i, j]
-                        if not np.ma.is_masked(v):
-                            fv = float(v)
-                            ax2.text(
-                                j,
-                                i,
-                                str(int(fv)),
-                                ha="center",
-                                va="center",
-                                fontsize=5,
-                                color="white" if fv > vmax_nn * 0.55 else "black",
-                                zorder=4,
-                            )
-            fig.colorbar(im2, ax=ax2, shrink=0.82, pad=0.02).set_label("not asked")
-
-        if ncols > 1:
-            fig.suptitle(title, fontsize=11)
+        fig.colorbar(im0, ax=ax0, shrink=0.9, pad=0.02).set_label("P(yes)")
+        fig.suptitle(title, fontsize=11)
 
         layout.addWidget(canvas, stretch=1)
         self._matrix_windows.append(dlg)
@@ -1351,8 +1208,7 @@ class PosetViewer(QWidget):
         # Matrix view button
         vert_matrix_btn = QPushButton("Show matrix…")
         vert_matrix_btn.setToolTip(
-            "Tri-valued matrix (single file), or P(yes) heatmap; merged / saved merged JSON "
-            "also shows n_answered and n_notasked next to P when available."
+            "Tri-valued matrix (single file), or P(yes) heatmap for merged / saved merged JSON."
         )
         vert_diagram_layout.addWidget(vert_matrix_btn)
         vert_layout.addWidget(vert_list_group, stretch=1)
@@ -1364,8 +1220,6 @@ class PosetViewer(QWidget):
             self._M_vertical,
             "Vertical",
             "above",
-            n_answered=self._matrix_vertical_n_answered,
-            n_notasked=self._matrix_vertical_n_notasked,
         )
         self._tabs.addTab(vert_widget, "Vertical (top–bottom)")
 
@@ -1383,8 +1237,7 @@ class PosetViewer(QWidget):
         ml_diagram_layout.addWidget(ml_hasse)
         ml_matrix_btn = QPushButton("Show matrix…")
         ml_matrix_btn.setToolTip(
-            "Tri-valued matrix (single file), or P(yes) heatmap; merged / saved merged JSON "
-            "also shows n_answered and n_notasked next to P when available."
+            "Tri-valued matrix (single file), or P(yes) heatmap for merged / saved merged JSON."
         )
         ml_diagram_layout.addWidget(ml_matrix_btn)
         ml_layout.addWidget(ml_list_group, stretch=1)
@@ -1396,8 +1249,6 @@ class PosetViewer(QWidget):
             self._M_mediolateral,
             "Lateral",
             "to the left of",
-            n_answered=self._matrix_mediolateral_n_answered,
-            n_notasked=self._matrix_mediolateral_n_notasked,
         )
         self._tabs.addTab(ml_widget, "Lateral (right–left, patient's view)")
 
@@ -1415,8 +1266,7 @@ class PosetViewer(QWidget):
         ap_diagram_layout.addWidget(ap_hasse)
         ap_matrix_btn = QPushButton("Show matrix…")
         ap_matrix_btn.setToolTip(
-            "Tri-valued matrix (single file), or P(yes) heatmap; merged / saved merged JSON "
-            "also shows n_answered and n_notasked next to P when available."
+            "Tri-valued matrix (single file), or P(yes) heatmap for merged / saved merged JSON."
         )
         ap_diagram_layout.addWidget(ap_matrix_btn)
         ap_layout.addWidget(ap_list_group, stretch=1)
@@ -1428,8 +1278,6 @@ class PosetViewer(QWidget):
             self._M_anteroposterior,
             "Anteroposterior",
             "in front of",
-            n_answered=self._matrix_anteroposterior_n_answered,
-            n_notasked=self._matrix_anteroposterior_n_notasked,
         )
         self._tabs.addTab(ap_widget, "Anteroposterior (front–back)")
 
@@ -1438,18 +1286,8 @@ class PosetViewer(QWidget):
             labs = self._structures_for_tab("Vertical")
             if self._merged_mode and self._agg_vertical is not None:
                 self._show_agg_matrix(self._agg_vertical, "Vertical axis", labs)
-            elif self._use_probability_matrix_view(
-                self._M_vertical,
-                self._matrix_vertical_n_answered,
-                self._matrix_vertical_n_notasked,
-            ):
-                self._show_probability_matrix(
-                    self._M_vertical,
-                    "Vertical axis",
-                    labs,
-                    n_answered=self._matrix_vertical_n_answered,
-                    n_notasked=self._matrix_vertical_n_notasked,
-                )
+            elif self._use_probability_matrix_view(self._M_vertical):
+                self._show_probability_matrix(self._M_vertical, "Vertical axis", labs)
             else:
                 self._show_discrete_matrix(self._M_vertical, "Vertical axis", labs)
 
@@ -1457,18 +1295,8 @@ class PosetViewer(QWidget):
             labs = self._structures_for_tab("Lateral")
             if self._merged_mode and self._agg_mediolateral is not None:
                 self._show_agg_matrix(self._agg_mediolateral, "Lateral axis", labs)
-            elif self._use_probability_matrix_view(
-                self._M_mediolateral,
-                self._matrix_mediolateral_n_answered,
-                self._matrix_mediolateral_n_notasked,
-            ):
-                self._show_probability_matrix(
-                    self._M_mediolateral,
-                    "Lateral axis",
-                    labs,
-                    n_answered=self._matrix_mediolateral_n_answered,
-                    n_notasked=self._matrix_mediolateral_n_notasked,
-                )
+            elif self._use_probability_matrix_view(self._M_mediolateral):
+                self._show_probability_matrix(self._M_mediolateral, "Lateral axis", labs)
             else:
                 self._show_discrete_matrix(self._M_mediolateral, "Lateral axis", labs)
 
@@ -1476,18 +1304,8 @@ class PosetViewer(QWidget):
             labs = self._structures_for_tab("Anteroposterior")
             if self._merged_mode and self._agg_anteroposterior is not None:
                 self._show_agg_matrix(self._agg_anteroposterior, "Anteroposterior axis", labs)
-            elif self._use_probability_matrix_view(
-                self._M_anteroposterior,
-                self._matrix_anteroposterior_n_answered,
-                self._matrix_anteroposterior_n_notasked,
-            ):
-                self._show_probability_matrix(
-                    self._M_anteroposterior,
-                    "Anteroposterior axis",
-                    labs,
-                    n_answered=self._matrix_anteroposterior_n_answered,
-                    n_notasked=self._matrix_anteroposterior_n_notasked,
-                )
+            elif self._use_probability_matrix_view(self._M_anteroposterior):
+                self._show_probability_matrix(self._M_anteroposterior, "Anteroposterior axis", labs)
             else:
                 self._show_discrete_matrix(self._M_anteroposterior, "Anteroposterior axis", labs)
 
