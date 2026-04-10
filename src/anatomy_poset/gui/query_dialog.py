@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
-from PySide6.QtCore import Qt, QRectF, QSize, QEvent
+from PySide6.QtCore import Qt, QRect, QRectF, QSize, QEvent
 from PySide6.QtGui import QCloseEvent, QGuiApplication, QImage, QPainter, QPen, QPixmap, QColor, QTransform
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSplitter,
+    QSplitterHandle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -746,6 +747,32 @@ class FullBodyVolumePanel(QWidget):
         if self._plane == "axial" and getattr(self, "_raw_pix", None) is not None:
             self._apply_pix_to_label()
 
+class _ArrowSplitterHandle(QSplitterHandle):
+    """Splitter handle that paints ‹ › arrows to hint drag direction."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        r = self.rect()
+        painter.setPen(QColor("#555555"))
+        font = painter.font()
+        font.setPointSize(6)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(
+            QRect(0, r.height() // 2 - 8, r.width(), 16),
+            Qt.AlignmentFlag.AlignCenter,
+            "‹ ›",
+        )
+        painter.end()
+
+
+class _ArrowSplitter(QSplitter):
+    def createHandle(self):
+        return _ArrowSplitterHandle(self.orientation(), self)
+
+
 class QueryDialog(QDialog):
     """
     Standalone dialog for expert queries only.
@@ -809,7 +836,7 @@ class QueryDialog(QDialog):
 
         # Use a horizontal splitter so the three main sections (anatomy images,
         # questions/overview, full-body volume) can be resized by the user.
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter = _ArrowSplitter(Qt.Orientation.Horizontal, self)
         self._splitter = splitter
         splitter.setHandleWidth(10)
         splitter.setStyleSheet(
