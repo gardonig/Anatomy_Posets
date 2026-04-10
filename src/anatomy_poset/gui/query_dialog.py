@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -405,10 +407,15 @@ class FullBodyVolumePanel(QWidget):
         slider_widget = QWidget(self)
         slider_col = QVBoxLayout(slider_widget)
         slider_col.setContentsMargins(0, 0, 0, 0)
+        slider_col.setSpacing(2)
         right_col.addWidget(slider_widget, 1, Qt.AlignmentFlag.AlignHCenter)
 
         self._prev_btn = QPushButton("▲")
-        self._prev_btn.setFixedWidth(32)
+        self._prev_btn.setFixedSize(44, 28)
+        self._prev_btn.setStyleSheet("font-size: 16px;")
+        self._prev_btn.setAutoRepeat(True)
+        self._prev_btn.setAutoRepeatDelay(400)
+        self._prev_btn.setAutoRepeatInterval(80)
         self._prev_btn.clicked.connect(self._step_prev)
         self._prev_btn.setEnabled(False)
         slider_col.addWidget(self._prev_btn, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -427,7 +434,11 @@ class FullBodyVolumePanel(QWidget):
         slider_col.addWidget(self._slider, 1, Qt.AlignmentFlag.AlignHCenter)
 
         self._next_btn = QPushButton("▼")
-        self._next_btn.setFixedWidth(32)
+        self._next_btn.setFixedSize(44, 28)
+        self._next_btn.setStyleSheet("font-size: 16px;")
+        self._next_btn.setAutoRepeat(True)
+        self._next_btn.setAutoRepeatDelay(400)
+        self._next_btn.setAutoRepeatInterval(80)
         self._next_btn.clicked.connect(self._step_next)
         self._next_btn.setEnabled(False)
         slider_col.addWidget(self._next_btn, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -441,10 +452,15 @@ class FullBodyVolumePanel(QWidget):
         # Used for coronal and sagittal planes so that left/right movement of the slider
         # matches left/right of the body.
         bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(2)
         left_col.addLayout(bottom_row)
 
         self._bottom_prev_btn = QPushButton("◀")
-        self._bottom_prev_btn.setFixedWidth(32)
+        self._bottom_prev_btn.setFixedSize(44, 28)
+        self._bottom_prev_btn.setStyleSheet("font-size: 16px;")
+        self._bottom_prev_btn.setAutoRepeat(True)
+        self._bottom_prev_btn.setAutoRepeatDelay(400)
+        self._bottom_prev_btn.setAutoRepeatInterval(80)
         self._bottom_prev_btn.setEnabled(False)
         self._bottom_prev_btn.clicked.connect(self._step_prev)
         self._bottom_prev_btn.setVisible(False)
@@ -461,7 +477,11 @@ class FullBodyVolumePanel(QWidget):
         bottom_row.addWidget(self._bottom_slider, stretch=1)
 
         self._bottom_next_btn = QPushButton("▶")
-        self._bottom_next_btn.setFixedWidth(32)
+        self._bottom_next_btn.setFixedSize(44, 28)
+        self._bottom_next_btn.setStyleSheet("font-size: 16px;")
+        self._bottom_next_btn.setAutoRepeat(True)
+        self._bottom_next_btn.setAutoRepeatDelay(400)
+        self._bottom_next_btn.setAutoRepeatInterval(80)
         self._bottom_next_btn.setEnabled(False)
         self._bottom_next_btn.clicked.connect(self._step_next)
         self._bottom_next_btn.setVisible(False)
@@ -755,13 +775,13 @@ class _ArrowSplitterHandle(QSplitterHandle):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         r = self.rect()
-        painter.setPen(QColor("#555555"))
+        painter.setPen(QColor("#333333"))
         font = painter.font()
-        font.setPointSize(6)
+        font.setPointSize(14)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(
-            QRect(0, r.height() // 2 - 8, r.width(), 16),
+            QRect(0, r.height() // 2 - 16, r.width(), 32),
             Qt.AlignmentFlag.AlignCenter,
             "‹ ›",
         )
@@ -771,6 +791,69 @@ class _ArrowSplitterHandle(QSplitterHandle):
 class _ArrowSplitter(QSplitter):
     def createHandle(self):
         return _ArrowSplitterHandle(self.orientation(), self)
+
+
+class _AdaptiveQueryLabel(QLabel):
+    """
+    QLabel with word-wrap that:
+    - Prefers H_MARGIN px of horizontal breathing room on each side.
+    - Reduces that margin to zero when the text would not fit vertically at the
+      narrower width (so text is allowed to reach the edges on small windows).
+    - Pre-processes plain text to insert a zero-width space (U+200B) after the
+      last underscore of any token that contains underscores, giving Qt a break
+      opportunity there for long structure names.
+    """
+
+    H_MARGIN = 20
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWordWrap(True)
+        self._raw_text: str = ""
+        self._adapting: bool = False
+
+    def setText(self, text: str) -> None:
+        self._raw_text = text
+        super().setText(self._add_break_hints(text))
+        self._adapt_margins()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._adapt_margins()
+
+    @staticmethod
+    def _add_break_hints(text: str) -> str:
+        """Insert U+200B after the last underscore in each underscore-containing token."""
+        out = []
+        for token in text.split(" "):
+            idx = token.rfind("_")
+            if idx != -1 and idx < len(token) - 1:
+                token = token[: idx + 1] + "\u200b" + token[idx + 1 :]
+            out.append(token)
+        return " ".join(out)
+
+    def _adapt_margins(self) -> None:
+        if self._adapting:
+            return
+        self._adapting = True
+        try:
+            m = self.H_MARGIN
+            inner_w = self.width() - 2 * m
+            if inner_w < 60:
+                self.setContentsMargins(0, 0, 0, 0)
+                return
+            fm = self.fontMetrics()
+            rect = fm.boundingRect(
+                0, 0, inner_w, 10_000,
+                int(Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignCenter),
+                self.text(),
+            )
+            if rect.height() <= self.height():
+                self.setContentsMargins(m, 0, m, 0)
+            else:
+                self.setContentsMargins(0, 0, 0, 0)
+        finally:
+            self._adapting = False
 
 
 class QueryDialog(QDialog):
@@ -803,6 +886,10 @@ class QueryDialog(QDialog):
         self._answer_history: List[Tuple[int, int, Optional[bool]]] = []
         # Snapshot of M before each user answer (enables correct undo for tri-valued matrix).
         self._matrix_snapshots: List[List[List[int]]] = []
+        # Short display labels for each history entry (mirrors _answer_history 1-to-1).
+        self._answer_history_labels: List[str] = []
+        # When not None, holds the tail of history that should be replayed after a correction answer.
+        self._correction_replay: Optional[List[Tuple[int, int, Optional[bool]]]] = None
         # Clamp initial size to screen, but do not lock min/max.
         self._clamp_to_current_screen()
 
@@ -937,19 +1024,17 @@ class QueryDialog(QDialog):
         left_col.setContentsMargins(8, 8, 8, 8)
         left_col.setSpacing(6)
 
-        questions_layout = left_col  # content goes directly into the column
-
-        # Question card (no border inside the questions panel)
+        # Question card — fills all available vertical space; text is centred inside.
         self.question_card = QFrame()
         self.question_card.setFrameShape(QFrame.Shape.NoFrame)
         self.question_card.setStyleSheet(
             "QFrame { background-color: #f8f8fc; border-radius: 10px; border: none; }"
         )
+        self.question_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         card_layout = QVBoxLayout(self.question_card)
         card_layout.setContentsMargins(0, 12, 0, 12)
         card_layout.setSpacing(4)
-        self.query_label = QLabel("")
-        self.query_label.setWordWrap(True)
+        self.query_label = _AdaptiveQueryLabel(self)
         self.query_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.query_label.setStyleSheet(
             "color: #1a1a1a; font-size: 22px; font-weight: 500; line-height: 1.4;"
@@ -957,28 +1042,46 @@ class QueryDialog(QDialog):
         card_layout.addWidget(self.query_label)
 
         # Center of mass info for the current pair (per axis + pair mean)
-        self.com_label = QLabel("")
-        self.com_label.setWordWrap(True)
+        self.com_label = _AdaptiveQueryLabel(self)
         self.com_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.com_label.setStyleSheet(
             "color: #555555; font-size: 13px; margin-top: 4px;"
         )
         card_layout.addWidget(self.com_label)
-        questions_layout.addWidget(self.question_card, stretch=1)
+        left_col.addWidget(self.question_card, stretch=1)
+
+        # Answer history list — hidden until at least one answer is given
+        self._history_list = QListWidget()
+        self._history_list.setMaximumHeight(110)
+        self._history_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._history_list.setStyleSheet(
+            """
+            QListWidget {
+                background: #2c2c2e; border: none; border-radius: 6px;
+                padding: 2px 0;
+            }
+            QListWidget::item {
+                padding: 3px 8px; border-radius: 4px; color: #e0e0e0; font-size: 12px;
+            }
+            QListWidget::item:hover { background: #3a3a3c; }
+            QListWidget::item:selected { background: #48484a; color: #ffffff; }
+            """
+        )
+        self._history_list.hide()
+        left_col.addWidget(self._history_list)
 
         self.feedback_box = QPlainTextEdit()
         self.feedback_box.setPlaceholderText(
             "Optional comment/feedback on this question / your answer (e.g. ambiguity, missing context, unsure anatomy, etc.)"
         )
-        # Compact by default, but allow shrinking with the window.
         self.feedback_box.setMaximumHeight(90)
-        self.feedback_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.feedback_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.feedback_box.setStyleSheet(
             "background: #ffffff; color: #1a1a1a; border: 1px solid #e0e0e0; border-radius: 8px; padding: 8px;"
         )
-        questions_layout.addWidget(self.feedback_box)
+        left_col.addWidget(self.feedback_box)
 
-        # Back, Yes, No
+        # Back, Yes, No — directly below the feedback box
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         self.back_btn = QPushButton("← Undo  [A]")
@@ -1031,7 +1134,7 @@ class QueryDialog(QDialog):
         btn_row.addWidget(self.no_btn, stretch=1)
         btn_row.addWidget(self.not_sure_btn, stretch=1)
         btn_row.addWidget(self.yes_btn, stretch=1)
-        questions_layout.addLayout(btn_row)
+        left_col.addLayout(btn_row)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -1053,9 +1156,22 @@ class QueryDialog(QDialog):
             }
             """
         )
-        questions_layout.addWidget(self.progress_bar)
+        left_col.addWidget(self.progress_bar)
 
-        # Finish and Close (shown when done)
+        # Finish button (shown when done)
+        # Finish row: Undo on the left, Done on the right (shown only when all questions answered)
+        self._finish_row = QWidget()
+        _finish_layout = QHBoxLayout(self._finish_row)
+        _finish_layout.setContentsMargins(0, 0, 0, 0)
+        _finish_layout.setSpacing(6)
+
+        self._finish_undo_btn = QPushButton("← Undo  [A]")
+        self._finish_undo_btn.setStyleSheet(
+            "padding: 12px 8px; min-width: 0px; font-size: 14px; border-radius: 8px;"
+        )
+        self._finish_undo_btn.clicked.connect(self.go_back_one_question)
+        _finish_layout.addWidget(self._finish_undo_btn)
+
         self.finish_btn = QPushButton("Done")
         self.finish_btn.setStyleSheet(
             """
@@ -1068,25 +1184,26 @@ class QueryDialog(QDialog):
             """
         )
         self.finish_btn.clicked.connect(self.accept)
-        self.finish_btn.hide()
-        questions_layout.addWidget(self.finish_btn)
+        _finish_layout.addWidget(self.finish_btn, stretch=1)
 
-        # Thin divider between questions and overview
+        self._finish_row.hide()
+        left_col.addWidget(self._finish_row)
+
+        # Thin divider
         _divider = QFrame()
         _divider.setFrameShape(QFrame.Shape.HLine)
         _divider.setFixedHeight(1)
         _divider.setStyleSheet("background: #d0d0d8; border: none;")
         left_col.addWidget(_divider)
 
-        overview_layout = left_col  # overview content also goes directly into the column
-
-        # Segmentation classes overview image
+        # Segmentation classes overview image — fixed height so it never competes with the card
         overview_label = ClickableImageLabel("Segmentation classes overview — full view", self)
         overview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         overview_label.enable_interactive_view(True)
-        overview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        overview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        overview_label.setFixedHeight(160)
         overview_label.setStyleSheet(
-            "background: #000000; padding: 0px; margin: 8px 0 4px 0;"
+            "background: #000000; padding: 0px; margin: 4px 0 2px 0;"
         )
         overview_path = ASSETS_DIR / "definition_images" / "overview_classes_v2.png"
         if overview_path.exists():
@@ -1094,13 +1211,13 @@ class QueryDialog(QDialog):
             if not overview_pix.isNull():
                 overview_label.set_full_pixmap(overview_pix)
                 overview_label.setPixmap(
-                    overview_pix.scaledToHeight(220, Qt.SmoothTransformation)
+                    overview_pix.scaledToHeight(160, Qt.TransformationMode.SmoothTransformation)
                 )
         if overview_label.pixmap() is None or overview_label.pixmap().isNull():
             overview_label.setText("[Segmentation classes overview image missing]")
-        overview_layout.addWidget(overview_label)
-        left_col.addStretch(1)  # push content to vertical center
+        left_col.addWidget(overview_label)
 
+        # TotalSegmentator attribution — pinned at the very bottom
         overview_link = QLabel(
             '<a href="https://github.com/wasserth/TotalSegmentator/blob/master/resources/imgs/overview_classes_v2.png">'
             "Source: TotalSegmentator overview classes v2</a>",
@@ -1108,8 +1225,8 @@ class QueryDialog(QDialog):
         )
         overview_link.setOpenExternalLinks(True)
         overview_link.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        overview_link.setStyleSheet("color: #0a66c2; font-size: 11px; margin-bottom: 4px;")
-        overview_layout.addWidget(overview_link)
+        overview_link.setStyleSheet("color: #0a66c2; font-size: 11px; margin-top: 2px;")
+        left_col.addWidget(overview_link)
 
         # Add the middle column widget to the splitter
         splitter.addWidget(_wrap_column("Questions", middle_widget, 1, min_expanded=360))
@@ -1158,6 +1275,15 @@ class QueryDialog(QDialog):
 
         for _i in range(3):
             splitter.setCollapsible(_i, True)
+
+        # Bottom status bar: autosave notice
+        _autosave_bar = QLabel("Auto-saved after each answer — no data is lost if you close this window")
+        _autosave_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _autosave_bar.setStyleSheet(
+            "background: #2c2c2e; color: #8e8e93; font-size: 14px; padding: 6px 8px;"
+        )
+        _autosave_bar.setFixedHeight(34)
+        _root_layout.addWidget(_autosave_bar)
 
         self._advance_to_next_query()
 
@@ -1329,14 +1455,25 @@ class QueryDialog(QDialog):
                     return
         if pair is None:
             self._autosave_poset(seal_lower_triangle=True)
-            self.query_label.setText(
-                "Thank you for your participation!\n\nEnjoy the pizza 🍕"
-            )
+            if not self._answer_history:
+                # Poset was already fully filled before this session started.
+                self.query_label.setText(
+                    "This poset is already complete — all comparisons have been answered.\n\n"
+                    "You can safely close this window."
+                )
+                self.com_label.setText("")
+                self._finish_undo_btn.hide()
+            else:
+                self.query_label.setText(
+                    "Thank you for your participation!\n\nEnjoy the pizza 🍕"
+                )
+                self.com_label.setText("")
+                self._finish_undo_btn.show()
             self.yes_btn.hide()
             self.no_btn.hide()
             self.not_sure_btn.hide()
             self.back_btn.hide()
-            self.finish_btn.show()
+            self._finish_row.show()
             self.progress_bar.setValue(100)
             return
         i, j = pair
@@ -1398,6 +1535,7 @@ class QueryDialog(QDialog):
         i, j = self.pending_pair
         self._matrix_snapshots.append([row[:] for row in self.poset_builder.M])
         self._answer_history.append((i, j, is_above))
+        self._answer_history_labels.append(self._history_label(i, j, is_above))
         self.back_btn.setEnabled(True)
 
         if is_above is True:
@@ -1406,6 +1544,23 @@ class QueryDialog(QDialog):
             self.poset_builder.record_response_matrix(i, j, -1)
         else:
             self.poset_builder.record_unknown(i, j)
+
+        # After a correction, silently replay the answers that followed the corrected one.
+        if self._correction_replay is not None:
+            replay, self._correction_replay = self._correction_replay, None
+            for ri, rj, rans in replay:
+                if self.poset_builder.M[ri][rj] is None:
+                    self._matrix_snapshots.append([row[:] for row in self.poset_builder.M])  # type: ignore[arg-type]
+                    self._answer_history.append((ri, rj, rans))
+                    self._answer_history_labels.append(self._history_label(ri, rj, rans))
+                    if rans is True:
+                        self.poset_builder.record_response_matrix(ri, rj, 1)
+                    elif rans is False:
+                        self.poset_builder.record_response_matrix(ri, rj, -1)
+                    else:
+                        self.poset_builder.record_unknown(ri, rj)
+
+        self._refresh_history_list()
         self._advance_to_next_query()
         # Return focus to the dialog so the next keypress is caught immediately.
         self.setFocus()
@@ -1428,6 +1583,8 @@ class QueryDialog(QDialog):
             pass
         last_i, last_j, _last_answer = self._answer_history.pop()
         prev_m = self._matrix_snapshots.pop()
+        if self._answer_history_labels:
+            self._answer_history_labels.pop()
         self.poset_builder.restore_matrix(prev_m)
         self.poset_builder.finished = False
         self.poset_builder.current_gap = last_j - last_i
@@ -1466,11 +1623,17 @@ class QueryDialog(QDialog):
             f"{name_i}: CoM {axis_label} = {np.round(ci, 1)}\n"
             f"{name_j}: CoM {axis_label} = {np.round(cj, 1)}"
         )
+        self._finish_row.hide()
+        self.yes_btn.show()
+        self.no_btn.show()
+        self.not_sure_btn.show()
+        self.back_btn.show()
         self.yes_btn.setEnabled(True)
         self.no_btn.setEnabled(True)
         self.not_sure_btn.setEnabled(True)
         if not self._answer_history:
             self.back_btn.setEnabled(False)
+        self._refresh_history_list()
         self._update_progress()
         self._autosave_poset(seal_lower_triangle=False)
         self.setFocus()
@@ -1482,8 +1645,114 @@ class QueryDialog(QDialog):
         if total == 0:
             value = 0
         else:
-            value = int(100 * (asked / total) ** 0.5)
+            value = int(100 * (asked / total) ** 0.4)
         self.progress_bar.setValue(value)
+
+    # ------------------------------------------------------------------ history
+    def _history_label(self, i: int, j: int, answer: Optional[bool]) -> str:
+        name_i = self._display_name(i, self.poset_builder.structures[i].name)
+        name_j = self._display_name(j, self.poset_builder.structures[j].name)
+        verb = _relation_verb(self._axis)
+        ans_tag = "YES" if answer is True else ("NO" if answer is False else "?")
+        return f"{name_i}  {verb}  {name_j}  [{ans_tag}]"
+
+    def _refresh_history_list(self) -> None:
+        self._history_list.clear()
+        if not self._answer_history:
+            self._history_list.hide()
+            return
+        for k, ((_, _, ans), label) in enumerate(
+            zip(self._answer_history, self._answer_history_labels)
+        ):
+            if ans is True:
+                text_color = "#4cd964"
+            elif ans is False:
+                text_color = "#ff6b6b"
+            else:
+                text_color = "#aaaaaa"
+
+            row_w = QWidget()
+            row_w.setStyleSheet("background: transparent;")
+            row_layout = QHBoxLayout(row_w)
+            row_layout.setContentsMargins(8, 1, 4, 1)
+            row_layout.setSpacing(6)
+
+            text_lbl = QLabel(f"#{k + 1}  {label}")
+            text_lbl.setStyleSheet(
+                f"color: {text_color}; font-size: 12px; background: transparent;"
+            )
+            row_layout.addWidget(text_lbl, stretch=1)
+
+            correct_btn = QPushButton("↩ Correct")
+            correct_btn.setFixedHeight(20)
+            correct_btn.setStyleSheet(
+                """
+                QPushButton {
+                    background: #3a3a3c; color: #aaaaaa; border: none; border-radius: 4px;
+                    font-size: 11px; padding: 0 6px; min-width: 0;
+                }
+                QPushButton:hover { background: #007aff; color: #ffffff; }
+                QPushButton:pressed { background: #0051d5; color: #ffffff; }
+                """
+            )
+            correct_btn.clicked.connect(lambda *_, idx=k: self._start_correction(idx))
+            row_layout.addWidget(correct_btn)
+
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 28))
+            self._history_list.addItem(item)
+            self._history_list.setItemWidget(item, row_w)
+
+        self._history_list.show()
+        self._history_list.scrollToBottom()
+
+    def _start_correction(self, k: int) -> None:
+        if k < 0 or k >= len(self._answer_history):
+            return
+        ci, cj, _ = self._answer_history[k]
+        # Keep the answers that came after k so we can replay them
+        self._correction_replay = list(self._answer_history[k + 1:])
+        # Restore matrix to the snapshot taken just before answer k
+        prev_m = self._matrix_snapshots[k]
+        del self._answer_history[k:]
+        del self._matrix_snapshots[k:]
+        del self._answer_history_labels[k:]
+        self.poset_builder.restore_matrix(prev_m)  # type: ignore[arg-type]
+        self.poset_builder.finished = False
+        self.poset_builder.current_gap = cj - ci
+        self.poset_builder.current_i = ci + 1
+        self.pending_pair = (ci, cj)
+        # Display the question
+        si = self.poset_builder.structures[ci]
+        sj = self.poset_builder.structures[cj]
+        verb = _relation_verb(self._axis)
+        name_i = self._display_name(ci, si.name)
+        name_j = self._display_name(cj, sj.name)
+        subj_verb = "Are" if (" and " in name_i or _is_plural_structure(name_i)) else "Is"
+        self.query_label.setText(f"(Correcting) {subj_verb} the {name_i} {verb} the {name_j}?")
+        # CoM info
+        if self._axis == AXIS_VERTICAL:
+            core_i = self._bilateral_core_for_index(ci)
+            core_j = self._bilateral_core_for_index(cj)
+            ci_val = self._bilateral_core_com_vertical[core_i] if core_i else si.com_vertical
+            cj_val = self._bilateral_core_com_vertical[core_j] if core_j else sj.com_vertical
+            axis_label = "vertical"
+        elif self._axis == AXIS_MEDIOLATERAL:
+            ci_val, cj_val, axis_label = si.com_lateral, sj.com_lateral, "lateral"
+        else:
+            ci_val, cj_val, axis_label = si.com_anteroposterior, sj.com_anteroposterior, "anteroposterior"
+        self.com_label.setText(
+            f"{name_i}: CoM {axis_label} = {np.round(ci_val, 1)}\n"
+            f"{name_j}: CoM {axis_label} = {np.round(cj_val, 1)}"
+        )
+        # Restore answer buttons
+        self._finish_row.hide()
+        self.yes_btn.show(); self.no_btn.show(); self.not_sure_btn.show(); self.back_btn.show()
+        self.yes_btn.setEnabled(True); self.no_btn.setEnabled(True); self.not_sure_btn.setEnabled(True)
+        self.back_btn.setEnabled(bool(self._answer_history))
+        self._refresh_history_list()
+        self._update_progress()
+        self.setFocus()
 
     def _bilateral_core_for_index(self, idx: int) -> Optional[str]:
         """Singular core name for this structure if it is a bilateral side, else None (for CoM lookup)."""

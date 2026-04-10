@@ -62,6 +62,8 @@ class InstructionsDialog(QDialog):
             "We assume the patient is in standard anatomical position, as shown in the figure.\n\n"
             "You can click any image to open a larger view. Inside any image, use the mouse wheel to zoom "
             "and hold the right mouse button to drag (pan) while zoomed.\n\n"
+            "Do not worry about losing your progress — every answer is automatically saved to the file you "
+            "chose at the start. You can close the window at any time and continue later; no data will be lost.\n\n"
             "If you have any questions, please do not hesitate to reach out to Gian or Güney."
         )
         intro_label = QLabel(intro_text)
